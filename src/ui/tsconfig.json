@@ -26,5 +26,8 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "vite.native.config.ts"
+  ],
+  "exclude": [
+    "src/**/*_test.ts"
   ]
 }

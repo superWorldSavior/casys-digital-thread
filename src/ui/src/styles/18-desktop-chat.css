@@ -627,3 +627,81 @@
     transition: none;
   }
 }
+
+/* Session Canvas (#55): positionable board over retained session work. */
+.desktop-chat-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+.desktop-chat-canvas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.desktop-chat-canvas-toolbar label {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.desktop-chat-canvas-unplaced {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.desktop-chat-canvas-board {
+  position: relative;
+  min-height: 24rem;
+  overflow: auto;
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+}
+
+.desktop-chat-canvas-node {
+  position: absolute;
+  min-width: 16rem;
+  max-width: 28rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+  box-shadow: var(--shadow-sm);
+}
+
+.desktop-chat-canvas-node-header {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.3rem 0.5rem;
+  cursor: grab;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.desktop-chat-canvas-node-header:active {
+  cursor: grabbing;
+}
+
+.desktop-chat-canvas-node-header > span {
+  flex: 1;
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-chat-canvas-node > p {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}

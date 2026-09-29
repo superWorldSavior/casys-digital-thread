@@ -28,7 +28,11 @@ import {
   parseChatViewerAppFetchResponse,
   parseChatViewerArguments,
 } from "../../../presentation/desktop/chat/contracts.ts";
-import { type ChatViewerDispatch, ChatViewerPanel } from "./chat-viewer-panel.tsx";
+import {
+  type ChatViewerDispatch,
+  ChatViewerPanel,
+} from "./chat-viewer-panel.tsx";
+import { ChatCanvas } from "./chat-canvas.tsx";
 import { ChatSessionWorkList } from "./chat-session-work.tsx";
 import {
   type CatalogueCommandResponse,
@@ -93,7 +97,9 @@ export function DesktopChat(
   const fixedPanelAvailable = typeof projectId === "string" &&
     projectId.length > 0;
   const fixedProjectPanel = fixedPanelAvailable && wideDesktop;
-  const compactModal = fixedPanelAvailable ? smallProjectModal : fallbackCompactModal;
+  const compactModal = fixedPanelAvailable
+    ? smallProjectModal
+    : fallbackCompactModal;
   const projectSheet = fixedPanelAvailable && !wideDesktop && !compactModal;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const previousPresentationRef = useRef({ open, compactModal });
@@ -112,7 +118,9 @@ export function DesktopChat(
       const next = parseChatSnapshotDto(
         await bindings.casysChatSnapshot({
           protocol: DESKTOP_CHAT_PROTOCOL,
-          ...(typeof selectedId === "string" ? { conversationId: selectedId } : {}),
+          ...(typeof selectedId === "string"
+            ? { conversationId: selectedId }
+            : {}),
         }),
       );
       setSnapshot(next);
@@ -520,7 +528,10 @@ function AgentSelector({
   if (profiles.length === 0) return null;
   const value = activeProfileId ?? defaultProfileId ?? "";
   return (
-    <label className="desktop-chat-agent" title="Agent for this conversation (default when none is open)">
+    <label
+      className="desktop-chat-agent"
+      title="Agent for this conversation (default when none is open)"
+    >
       Agent
       <select
         aria-label="Agent"
@@ -553,7 +564,9 @@ function AgentSelector({
             value={profile.id}
             disabled={!profile.available}
             title={profile.available
-              ? (profile.version ? `Version ${profile.version}` : profile.displayName)
+              ? (profile.version
+                ? `Version ${profile.version}`
+                : profile.displayName)
               : (profile.missingReason ?? "Unavailable")}
           >
             {profile.displayName}
@@ -722,8 +735,8 @@ function CreateConversationForm({
           <>
             <p className="desktop-chat-interaction-kind">No project attached</p>
             <p>
-              A normal conversation with the configured agent. No brief, model, or
-              project is required; connect a tool when the task needs one.
+              A normal conversation with the configured agent. No brief, model,
+              or project is required; connect a tool when the task needs one.
             </p>
             <Button
               type="submit"
@@ -783,6 +796,7 @@ function Conversation({
   readonly retention: ChatRetentionDto | undefined;
 }): JSX.Element {
   const [text, setText] = useState("");
+  const [canvasOpen, setCanvasOpen] = useState(false);
   const standalone = conversation.kind === "standalone";
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -797,6 +811,19 @@ function Conversation({
       text: message,
     });
   };
+  if (canvasOpen) {
+    return (
+      <div className="desktop-chat-conversation">
+        <ChatCanvas
+          conversationId={conversation.id}
+          viewers={conversation.viewers}
+          dispatch={viewerDispatch}
+          command={command}
+          onClose={() => setCanvasOpen(false)}
+        />
+      </div>
+    );
+  }
   return (
     <div className="desktop-chat-conversation">
       <div className="desktop-chat-project-line">
@@ -810,6 +837,14 @@ function Conversation({
         >
           {conversation.status}
         </Badge>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setCanvasOpen(true)}
+        >
+          Open canvas
+        </Button>
       </div>
       {standalone && (
         <McpAttachment
@@ -957,7 +992,9 @@ function Interaction({
           {interaction.options.map((option) => (
             <Button
               type="button"
-              variant={option.decision.startsWith("allow") ? "default" : "outline"}
+              variant={option.decision.startsWith("allow")
+                ? "default"
+                : "outline"}
               size="sm"
               key={option.decision}
               disabled={busy}
@@ -1244,7 +1281,9 @@ function ChatField({
         id={id}
         type={inputType}
         required={field.required}
-        value={typeof value === "string" || typeof value === "number" ? value : ""}
+        value={typeof value === "string" || typeof value === "number"
+          ? value
+          : ""}
         min={field.type === "number" || field.type === "integer"
           ? field.minimum
           : undefined}
@@ -1355,7 +1394,10 @@ function CatalogueView({
       | { readonly command: "catalogue.prepare"; readonly entryId: string }
       | { readonly command: "catalogue.probe"; readonly entryId: string }
       | { readonly command: "catalogue.runtime.stop"; readonly entryId: string }
-      | { readonly command: "catalogue.runtime.restart"; readonly entryId: string }
+      | {
+        readonly command: "catalogue.runtime.restart";
+        readonly entryId: string;
+      }
       | {
         readonly command: "catalogue.defaults.set";
         readonly ids: readonly string[];
@@ -1453,7 +1495,9 @@ function CatalogueView({
     );
   }
   const defaults =
-    snapshot?.entries.filter((entry) => entry.isDefault).map((entry) => entry.id) ??
+    snapshot?.entries.filter((entry) => entry.isDefault).map((entry) =>
+      entry.id
+    ) ??
       [];
   return (
     <div className="desktop-chat-catalogue">
@@ -1537,7 +1581,9 @@ function CatalogueEntryCard({
   readonly onToggleDefault: () => void;
   readonly onEnable: () => void;
 }): JSX.Element {
-  const attached = conversation?.kind === "standalone" ? conversation.mcp : undefined;
+  const attached = conversation?.kind === "standalone"
+    ? conversation.mcp
+    : undefined;
   const attachedMine = attached?.id === entry.id;
   const busyTurn = conversation?.status === "running" ||
     conversation?.status === "queued";
@@ -1566,13 +1612,17 @@ function CatalogueEntryCard({
         <StateBadge label="Running" on={entry.availability.running} />
         <StateBadge label="Capable" on={entry.availability.capable} />
         <Badge
-          variant={entry.availability.runtime === "error" ? "destructive" : "secondary"}
+          variant={entry.availability.runtime === "error"
+            ? "destructive"
+            : "secondary"}
           className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
         >
           {entry.availability.runtime}
         </Badge>
         <Badge
-          variant={entry.availability.engine === "ready" ? "success" : "warning"}
+          variant={entry.availability.engine === "ready"
+            ? "success"
+            : "warning"}
           className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
         >
           engine {entry.availability.engine}
@@ -1591,7 +1641,8 @@ function CatalogueEntryCard({
       <ul>
         {entry.tools.map((tool) => (
           <li key={tool.name}>
-            <code>{tool.name}</code> — {tool.summary} In: {tool.inputs} Out:{" "}
+            <code>{tool.name}</code> — {tool.summary} In: {tool.inputs} Out:
+            {" "}
             {tool.results}
           </li>
         ))}
@@ -1609,14 +1660,17 @@ function CatalogueEntryCard({
         {entry.viewers.map((viewer) => (
           <li key={viewer.uri}>
             {viewer.label} (<code>{viewer.uri}</code>) —{" "}
-            {viewer.hostSupport === "available" ? "available in Casys" : "planned"}
+            {viewer.hostSupport === "available"
+              ? "available in Casys"
+              : "planned"}
             {viewer.note ? `: ${viewer.note}` : ""}
           </li>
         ))}
       </ul>
       <p className="desktop-chat-interaction-kind">Tested distribution</p>
       <p>
-        {entry.distribution.version} ({entry.distribution.release}), revision{" "}
+        {entry.distribution.version} ({entry.distribution.release}), revision
+        {" "}
         <code>{entry.distribution.revision}</code>
       </p>
       <p className="desktop-chat-interaction-kind">Platforms</p>
@@ -1654,7 +1708,8 @@ function CatalogueEntryCard({
           type="button"
           variant="ghost"
           size="sm"
-          disabled={busy || acting !== null || entry.availability.runtime === "stopped"}
+          disabled={busy || acting !== null ||
+            entry.availability.runtime === "stopped"}
           onClick={onStop}
         >
           {acting === `Stop:${entry.id}` ? "Stopping…" : "Stop"}
@@ -1697,7 +1752,9 @@ function CatalogueEntryCard({
             onClick={onEnable}
           >
             {enableLabel(
-              attached === undefined ? "Enable in this chat" : "Switch to this tool",
+              attached === undefined
+                ? "Enable in this chat"
+                : "Switch to this tool",
             )}
           </Button>
         )}
@@ -1935,5 +1992,7 @@ function requestId(): string {
 }
 
 function readError(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "Desktop Chat is unavailable.";
+  return cause instanceof Error
+    ? cause.message
+    : "Desktop Chat is unavailable.";
 }
