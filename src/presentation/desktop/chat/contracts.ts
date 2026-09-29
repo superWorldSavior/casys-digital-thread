@@ -258,6 +258,47 @@ export interface ChatViewerResourceDto {
   readonly source: "saved" | "live";
 }
 
+/**
+ * Session Canvas layout (#55): presentation-only, keyed by conversation.
+ *
+ * Like the project whiteboard, this schema is never Thread evidence, a
+ * viewer-capability source, or a provider input. The conversation snapshot
+ * (retained tool results, workspace files) stays the sole authority;
+ * persisted entries are admitted only after exact reconciliation with it.
+ */
+export const CHAT_CANVAS_LAYOUT_VERSION = 1;
+const CHAT_CANVAS_MAX_NODES = 200;
+const CHAT_CANVAS_MAX_GROUPS = 50;
+const CHAT_CANVAS_MAX_TEXT = 2_000;
+const CHAT_CANVAS_MAX_COORDINATE = 100_000;
+const CHAT_CANVAS_MAX_Z = 1_000_000;
+
+export interface ChatCanvasNodeDto {
+  readonly id: string;
+  readonly kind: "viewer" | "note";
+  readonly x: number;
+  readonly y: number;
+  readonly width?: number;
+  readonly height?: number;
+  readonly z: number;
+  /** Retained tool result identity; viewer nodes only. */
+  readonly toolCallId?: string;
+  /** Lightweight note text; note nodes only. */
+  readonly text?: string;
+  readonly groupId?: string;
+}
+
+export interface ChatCanvasGroupDto {
+  readonly id: string;
+  readonly title: string;
+}
+
+export interface ChatCanvasLayoutDto {
+  readonly version: typeof CHAT_CANVAS_LAYOUT_VERSION;
+  readonly nodes: readonly ChatCanvasNodeDto[];
+  readonly groups: readonly ChatCanvasGroupDto[];
+}
+
 export interface ChatSnapshotRequest {
   readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
   readonly conversationId?: string;
@@ -377,6 +418,19 @@ export type ChatCommandRequest =
     readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
     readonly requestId: string;
     readonly command: "agent.reload-profiles";
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "canvas.get-layout";
+    readonly conversationId: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "canvas.set-layout";
+    readonly conversationId: string;
+    readonly layout: ChatCanvasLayoutDto;
   };
 
 export interface ChatCommandResponse {
@@ -388,6 +442,7 @@ export interface ChatCommandResponse {
   readonly viewer?: ChatViewerSessionDto;
   readonly viewerResult?: ChatViewerJson;
   readonly viewerResource?: ChatViewerResourceDto;
+  readonly layout?: ChatCanvasLayoutDto;
 }
 
 export type DesktopChatBindingCommandRequest = ChatCommandRequest | {
@@ -558,6 +613,23 @@ export function parseChatCommandRequest(value: unknown): ChatCommandRequest {
       conversationId,
       toolCallId,
       uri: viewerResourceUri(input.uri),
+    });
+  }
+  if (command === "canvas.get-layout") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      conversationId,
+    });
+  }
+  if (command === "canvas.set-layout") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      conversationId,
+      layout: parseChatCanvasLayout(input.layout),
     });
   }
   const correlationId = opaqueId(input.correlationId, "correlationId");
@@ -958,6 +1030,9 @@ export function parseChatCommandResponse(value: unknown): ChatCommandResponse {
   const viewerResource = input.viewerResource === undefined
     ? undefined
     : parseViewerResourceDto(input.viewerResource);
+  const layout = input.layout === undefined
+    ? undefined
+    : parseChatCanvasLayout(input.layout);
   return Object.freeze({
     protocol: DESKTOP_CHAT_PROTOCOL,
     requestId,
@@ -967,6 +1042,7 @@ export function parseChatCommandResponse(value: unknown): ChatCommandResponse {
     ...(viewer === undefined ? {} : { viewer }),
     ...(viewerResult === undefined ? {} : { viewerResult }),
     ...(viewerResource === undefined ? {} : { viewerResource }),
+    ...(layout === undefined ? {} : { layout }),
   });
 }
 
@@ -1127,6 +1203,116 @@ function parseViewerResourceDto(value: unknown): ChatViewerResourceDto {
     data: viewerBase64(input.data, "viewer resource data"),
     source,
   });
+}
+
+export function parseChatCanvasLayout(value: unknown): ChatCanvasLayoutDto {
+  const input = record(value, "canvas layout");
+  if (input.version !== CHAT_CANVAS_LAYOUT_VERSION) {
+    throw new TypeError("canvas layout version is invalid");
+  }
+  if (!Array.isArray(input.nodes) || input.nodes.length > CHAT_CANVAS_MAX_NODES) {
+    throw new TypeError("canvas layout nodes are invalid");
+  }
+  if (!Array.isArray(input.groups) || input.groups.length > CHAT_CANVAS_MAX_GROUPS) {
+    throw new TypeError("canvas layout groups are invalid");
+  }
+  const groups = input.groups.map((entry) => parseChatCanvasGroup(entry));
+  const groupIds = new Set(groups.map((entry) => entry.id));
+  if (groupIds.size !== groups.length) {
+    throw new TypeError("canvas layout group ids must be unique");
+  }
+  const nodes = input.nodes.map((entry) => parseChatCanvasNode(entry, groupIds));
+  const nodeIds = new Set(nodes.map((entry) => entry.id));
+  if (nodeIds.size !== nodes.length) {
+    throw new TypeError("canvas layout node ids must be unique");
+  }
+  return Object.freeze({ version: CHAT_CANVAS_LAYOUT_VERSION, nodes, groups });
+}
+
+function parseChatCanvasGroup(value: unknown): ChatCanvasGroupDto {
+  const input = record(value, "canvas group");
+  return Object.freeze({
+    id: opaqueId(input.id, "canvas group id"),
+    title: text(input.title, "canvas group title", 200),
+  });
+}
+
+function parseChatCanvasNode(
+  value: unknown,
+  groupIds: ReadonlySet<string>,
+): ChatCanvasNodeDto {
+  const input = record(value, "canvas node");
+  const kind = input.kind;
+  if (kind !== "viewer" && kind !== "note") {
+    throw new TypeError("canvas node kind is invalid");
+  }
+  const groupId = input.groupId === undefined
+    ? undefined
+    : opaqueId(input.groupId, "canvas node group");
+  if (groupId !== undefined && !groupIds.has(groupId)) {
+    throw new TypeError("canvas node group is unknown");
+  }
+  const base = {
+    id: opaqueId(input.id, "canvas node id"),
+    kind,
+    x: canvasCoordinate(input.x, "canvas node x"),
+    y: canvasCoordinate(input.y, "canvas node y"),
+    ...optionalCanvasSize(input.width, "width", "canvas node width"),
+    ...optionalCanvasSize(input.height, "height", "canvas node height"),
+    z: canvasZ(input.z),
+    ...(groupId === undefined ? {} : { groupId }),
+  };
+  if (kind === "viewer") {
+    if (input.text !== undefined) {
+      throw new TypeError("canvas viewer nodes carry no text");
+    }
+    return Object.freeze({
+      ...base,
+      kind: "viewer",
+      toolCallId: opaqueId(input.toolCallId, "canvas node tool"),
+    });
+  }
+  if (input.toolCallId !== undefined) {
+    throw new TypeError("canvas note nodes carry no tool result");
+  }
+  return Object.freeze({
+    ...base,
+    kind: "note",
+    text: boundedText(input.text, "canvas note text", CHAT_CANVAS_MAX_TEXT),
+  });
+}
+
+function canvasCoordinate(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new TypeError(`${name} is invalid`);
+  }
+  if (Math.abs(value) > CHAT_CANVAS_MAX_COORDINATE) {
+    throw new TypeError(`${name} is out of range`);
+  }
+  return value;
+}
+
+function optionalCanvasSize(
+  value: unknown,
+  key: string,
+  name: string,
+): Record<string, number> {
+  if (value === undefined) return {};
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new TypeError(`${name} is invalid`);
+  }
+  if (value > CHAT_CANVAS_MAX_COORDINATE) {
+    throw new TypeError(`${name} is out of range`);
+  }
+  return { [key]: value };
+}
+
+function canvasZ(value: unknown): number {
+  if (!Number.isSafeInteger(value)) throw new TypeError("canvas node z is invalid");
+  if (Math.abs(value as number) > CHAT_CANVAS_MAX_Z) {
+    throw new TypeError("canvas node z is out of range");
+  }
+  return value as number;
 }
 
 function parseConversationMcpDto(value: unknown): ChatConversationMcpDto {

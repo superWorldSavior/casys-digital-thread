@@ -5,6 +5,7 @@ import {
   isChatOpaqueId,
   isChatViewerToolName,
   isChatViewerUiUri,
+  parseChatCanvasLayout,
   parseChatCommandRequest,
   parseChatCommandResponse,
   parseChatSaveFileRequest,
@@ -701,4 +702,131 @@ Deno.test("host filter predicates mirror the renderer shapes", () => {
   assertEquals(isChatViewerUiUri("https://example.com/x"), false);
   assertEquals(isChatViewerUiUri("ui://with space"), false);
   assertEquals(isChatViewerUiUri(`ui://${"x".repeat(500)}`), false);
+});
+
+function canvasLayout(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    version: 1,
+    nodes: [
+      {
+        id: "node-1",
+        kind: "viewer",
+        x: 10,
+        y: 20,
+        z: 1,
+        toolCallId: "tool-call-1",
+      },
+      {
+        id: "node-2",
+        kind: "note",
+        x: 300,
+        y: 20,
+        width: 240,
+        height: 120,
+        z: 2,
+        text: "Check wall thickness",
+        groupId: "group-1",
+      },
+    ],
+    groups: [{ id: "group-1", title: "Review" }],
+    ...overrides,
+  };
+}
+
+Deno.test("canvas layout parses viewer and note nodes strictly", () => {
+  const parsed = parseChatCanvasLayout(canvasLayout());
+  assertEquals(parsed.version, 1);
+  assertEquals(parsed.nodes.length, 2);
+  assertEquals(parsed.groups.length, 1);
+  const get = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-canvas-1",
+    command: "canvas.get-layout",
+    conversationId: "conv-1",
+  });
+  assertEquals(get.command, "canvas.get-layout");
+  const set = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-canvas-2",
+    command: "canvas.set-layout",
+    conversationId: "conv-1",
+    layout: canvasLayout(),
+  });
+  assertEquals(set.command, "canvas.set-layout");
+  const response = parseChatCommandResponse({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-canvas-1",
+    ok: true,
+    conversationId: "conv-1",
+    layout: canvasLayout(),
+  });
+  assertEquals(response.layout?.nodes.length, 2);
+});
+
+Deno.test("canvas layout rejects version, identity, and kind surprises", () => {
+  const cases: ReadonlyArray<readonly [Record<string, unknown>, string]> = [
+    [canvasLayout({ version: 2 }), "canvas layout version is invalid"],
+    [
+      canvasLayout({
+        nodes: [
+          { id: "dup", kind: "note", x: 0, y: 0, z: 0, text: "a" },
+          { id: "dup", kind: "note", x: 0, y: 0, z: 0, text: "b" },
+        ],
+      }),
+      "canvas layout node ids must be unique",
+    ],
+    [
+      canvasLayout({
+        nodes: [{
+          id: "n",
+          kind: "note",
+          x: 0,
+          y: 0,
+          z: 0,
+          text: "a",
+          groupId: "missing",
+        }],
+      }),
+      "canvas node group is unknown",
+    ],
+    [
+      canvasLayout({
+        nodes: [{
+          id: "n",
+          kind: "viewer",
+          x: 0,
+          y: 0,
+          z: 0,
+          toolCallId: "t",
+          text: "nope",
+        }],
+      }),
+      "canvas viewer nodes carry no text",
+    ],
+    [
+      canvasLayout({
+        nodes: [{
+          id: "n",
+          kind: "note",
+          x: 0,
+          y: 0,
+          z: 0,
+          text: "a",
+          toolCallId: "t",
+        }],
+      }),
+      "canvas note nodes carry no tool result",
+    ],
+    [
+      canvasLayout({
+        nodes: [{ id: "n", kind: "note", x: 1e9, y: 0, z: 0, text: "a" }],
+      }),
+      "canvas node x is out of range",
+    ],
+  ];
+  for (const [layout, message] of cases) {
+    assertThrows(() => parseChatCanvasLayout(layout), TypeError, message);
+  }
 });

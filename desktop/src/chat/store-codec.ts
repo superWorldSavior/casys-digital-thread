@@ -10,7 +10,9 @@ import type {
   StoredWorkArtifact,
 } from "./store.ts";
 import {
+  type ChatCanvasLayoutDto,
   type ChatMessageDto,
+  parseChatCanvasLayout,
   parseChatViewerArguments,
   parseChatViewerJson,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
@@ -127,6 +129,7 @@ export function readConversationMetadata(
   const toolResults = entry.toolResults === undefined
     ? undefined
     : readToolResults(entry.toolResults);
+  const canvasLayout = readCanvasLayout(entry.canvasLayout);
   return {
     id: requiredString(entry.id, "conversation id"),
     ...(kind === undefined ? {} : { kind }),
@@ -137,12 +140,26 @@ export function readConversationMetadata(
     ...(mcpTools === undefined ? {} : { mcpTools }),
     ...(knownMessageIdsByKey === undefined ? {} : { knownMessageIdsByKey }),
     ...(toolResults === undefined ? {} : { toolResults }),
+    ...(canvasLayout === undefined ? {} : { canvasLayout }),
     sessionKey: requiredString(entry.sessionKey, "session key"),
     title: requiredString(entry.title, "conversation title"),
     status,
     createdAt: requiredDate(entry.createdAt, "createdAt"),
     updatedAt: requiredDate(entry.updatedAt, "updatedAt"),
   };
+}
+
+/**
+ * Presentation layout (#55): absent before Canvas existed, and a corrupt
+ * entry degrades to absent instead of rejecting the conversation.
+ */
+function readCanvasLayout(value: unknown): ChatCanvasLayoutDto | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return parseChatCanvasLayout(value);
+  } catch {
+    return undefined;
+  }
 }
 
 export function readChatMessage(value: unknown): ChatMessageDto {

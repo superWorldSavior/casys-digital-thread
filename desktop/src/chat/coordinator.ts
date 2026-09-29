@@ -1,4 +1,6 @@
 import {
+  CHAT_CANVAS_LAYOUT_VERSION,
+  type ChatCanvasLayoutDto,
   type ChatCommandRequest,
   type ChatCommandResponse,
   type ChatConnectableMcpDto,
@@ -91,6 +93,13 @@ const VIEWER_RESOURCE_IPC_MAX_BYTES = 524_288;
 const WORK_ARCHIVE_MAX_BYTES = 524_288;
 const WORK_ARCHIVE_MAX_ARTIFACTS = 8;
 
+/** Empty session Canvas layout (#55); shared frozen default. */
+const EMPTY_CANVAS_LAYOUT: ChatCanvasLayoutDto = Object.freeze({
+  version: CHAT_CANVAS_LAYOUT_VERSION,
+  nodes: Object.freeze([]),
+  groups: Object.freeze([]),
+});
+
 interface ConversationState {
   readonly id: string;
   readonly kind: ChatConversationKind;
@@ -113,6 +122,8 @@ interface ConversationState {
    * Only results of the attached server carrying an App URI are retained.
    */
   toolResults: CapturedToolResult[];
+  /** Session Canvas presentation layout (#55); empty until arranged. */
+  canvasLayout: ChatCanvasLayoutDto;
   readonly title: string;
   readonly createdAt: string;
   updatedAt: string;
@@ -435,6 +446,26 @@ export class ChatCoordinator implements RuntimeInteractionSink {
             viewerResource,
           });
         }
+        case "canvas.get-layout": {
+          conversationId = request.conversationId;
+          return Object.freeze({
+            protocol: DESKTOP_CHAT_PROTOCOL,
+            requestId: request.requestId,
+            ok: true,
+            conversationId,
+            layout: this.#canvasLayout(conversationId),
+          });
+        }
+        case "canvas.set-layout": {
+          conversationId = request.conversationId;
+          await this.#setCanvasLayout(conversationId, request.layout);
+          return Object.freeze({
+            protocol: DESKTOP_CHAT_PROTOCOL,
+            requestId: request.requestId,
+            ok: true,
+            conversationId,
+          });
+        }
       }
       return Object.freeze({
         protocol: DESKTOP_CHAT_PROTOCOL,
@@ -498,6 +529,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       mcpTools: [],
       knownByKey: new Map(),
       toolResults: [],
+      canvasLayout: EMPTY_CANVAS_LAYOUT,
       title: title ?? (kind === "project" ? `Project ${projectId}` : "Standalone chat"),
       status: "idle",
       createdAt: now,
@@ -999,6 +1031,38 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       throw new Error("Unknown viewer session for this conversation.");
     }
     return entry;
+  }
+
+  /**
+   * Session Canvas layout (#55), reconciled with retained results: viewer
+   * nodes whose tool result is gone are dropped, notes and groups persist
+   * verbatim. Presentation only, never evidence.
+   */
+  #canvasLayout(conversationId: string): ChatCanvasLayoutDto {
+    const conversation = this.#conversation(conversationId);
+    const retained = new Set(
+      conversation.toolResults.map((entry) => entry.toolCallId),
+    );
+    const nodes = conversation.canvasLayout.nodes.filter((node) =>
+      node.kind !== "viewer" || (node.toolCallId !== undefined &&
+        retained.has(node.toolCallId))
+    );
+    return Object.freeze({
+      version: CHAT_CANVAS_LAYOUT_VERSION,
+      nodes: Object.freeze([...nodes]),
+      groups: conversation.canvasLayout.groups,
+    });
+  }
+
+  async #setCanvasLayout(
+    conversationId: string,
+    layout: ChatCanvasLayoutDto,
+  ): Promise<void> {
+    const conversation = this.#conversation(conversationId);
+    if (conversation.status === "closed") throw new Error("conversation is closed");
+    conversation.canvasLayout = layout;
+    conversation.updatedAt = new Date().toISOString();
+    await this.#persist();
   }
 
   async #openViewer(
@@ -1795,6 +1859,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       mcpTools: mcpAttached ? sanitizeMcpTools(stored.mcpTools) : [],
       knownByKey: restoreKnownByKey(stored),
       toolResults: restoreToolResults(stored),
+      canvasLayout: stored.canvasLayout ?? EMPTY_CANVAS_LAYOUT,
       title: stored.title,
       status: stored.status === "running" || stored.status === "queued"
         ? "idle"
@@ -1890,6 +1955,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         createdAt: entry.createdAt,
         updatedAt: entry.updatedAt,
         messages: Object.freeze([...entry.messages]),
+        canvasLayout: entry.canvasLayout,
       })
     );
     return this.#afterPersistTail(() => this.#store.save(snapshot));

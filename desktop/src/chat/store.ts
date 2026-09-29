@@ -1,4 +1,5 @@
 import type {
+  ChatCanvasLayoutDto,
   ChatConversationStatus,
   ChatMessageDto,
   ChatViewerJson,
@@ -70,6 +71,11 @@ export interface StoredConversation {
   readonly knownMessageIdsByKey?: Record<string, readonly string[]>;
   /** Exact MCP tool results retained for live viewer Apps, newest last. */
   readonly toolResults?: readonly StoredToolResult[];
+  /**
+   * Session Canvas presentation layout (#55). Absent before Canvas
+   * existed; readers treat a missing or invalid layout as empty.
+   */
+  readonly canvasLayout?: ChatCanvasLayoutDto;
   readonly sessionKey: string;
   readonly title: string;
   readonly status: ChatConversationStatus;

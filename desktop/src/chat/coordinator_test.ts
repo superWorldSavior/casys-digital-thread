@@ -2795,6 +2795,140 @@ Deno.test("claude-style capture ignores foreign and unparsable shapes", async ()
   await coordinator.stop();
 });
 
+Deno.test("canvas layout round-trips and reconciles against retained results", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "t_one (completed)",
+    toolCallId: "tool-call-canvas",
+    status: "completed",
+    rawInput: { server: "build123d", tool: "t_one", arguments: {} },
+    rawOutput: { result: viewerToolResult(1000) },
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const set = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-set-1",
+    command: "canvas.set-layout",
+    conversationId,
+    layout: {
+      version: 1,
+      nodes: [
+        {
+          id: "node-kept",
+          kind: "viewer",
+          x: 10,
+          y: 20,
+          z: 1,
+          toolCallId: "tool-call-canvas",
+        },
+        {
+          id: "node-dropped",
+          kind: "viewer",
+          x: 300,
+          y: 20,
+          z: 2,
+          toolCallId: "tool-call-gone",
+        },
+        {
+          id: "node-note",
+          kind: "note",
+          x: 10,
+          y: 300,
+          z: 3,
+          text: "Review wall",
+        },
+      ],
+      groups: [{ id: "group-1", title: "Review" }],
+    },
+  });
+  assert(set.ok);
+  const got = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-get-1",
+    command: "canvas.get-layout",
+    conversationId,
+  });
+  assert(got.ok);
+  assertEquals(
+    got.layout?.nodes.map((node) => node.id),
+    ["node-kept", "node-note"],
+  );
+  assertEquals(got.layout?.groups.length, 1);
+  await coordinator.stop();
+});
+
+Deno.test("canvas layout persists across restarts per conversation", async () => {
+  const store = new MemoryChatConversationStore();
+  const pool = standalonePool({ probeTools: ["t_one"], store });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const set = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-set-1",
+    command: "canvas.set-layout",
+    conversationId,
+    layout: {
+      version: 1,
+      nodes: [{
+        id: "node-note",
+        kind: "note",
+        x: 5,
+        y: 5,
+        z: 0,
+        text: "Survives restart",
+      }],
+      groups: [],
+    },
+  });
+  assert(set.ok);
+  await coordinator.stop();
+  const second = standalonePool({ probeTools: ["t_one"], store });
+  const resumed = await second.coordinator();
+  const got = await resumed.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-get-2",
+    command: "canvas.get-layout",
+    conversationId,
+  });
+  assert(got.ok);
+  assertEquals(got.layout?.nodes.length, 1);
+  assertEquals(
+    (got.layout?.nodes[0] as { text?: string }).text,
+    "Survives restart",
+  );
+  await resumed.stop();
+});
+
+Deno.test("canvas set-layout refuses closed conversations", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "close-1",
+    command: "conversation.close",
+    conversationId,
+  });
+  const set = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-set-1",
+    command: "canvas.set-layout",
+    conversationId,
+    layout: { version: 1, nodes: [], groups: [] },
+  });
+  assertEquals(set.ok, false);
+  await coordinator.stop();
+});
+
 Deno.test("output-less tool events capture nothing without a tap", async () => {
   const pool = standalonePool({ probeTools: ["t_one"] });
   const coordinator = await pool.coordinator();

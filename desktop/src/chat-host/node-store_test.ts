@@ -235,6 +235,80 @@ function archivedEntry(id: string, now: string): StoredConversation {
   };
 }
 
+Deno.test("Node store round-trips the session canvas layout", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
+  try {
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const store = new NodeChatConversationStore(root, { now: () => now });
+    const entry: StoredConversation = {
+      id: "conversation:canvas",
+      kind: "standalone",
+      agentProfileId: "casys-muse",
+      sessionKey: "casys-desktop-exclusive/standalone/conversation:canvas",
+      title: "Standalone",
+      status: "idle",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      messages: [],
+      canvasLayout: {
+        version: 1,
+        nodes: [{
+          id: "node-1",
+          kind: "note",
+          x: 1,
+          y: 2,
+          z: 0,
+          text: "kept",
+        }],
+        groups: [],
+      },
+    };
+    await store.save([entry]);
+    const loaded = await store.load();
+    assertEquals(loaded.length, 1);
+    assertEquals(loaded[0].canvasLayout?.nodes.length, 1);
+    assertEquals(
+      (loaded[0].canvasLayout?.nodes[0] as { text?: string }).text,
+      "kept",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("Node store load degrades a corrupt canvas layout to absent", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
+  try {
+    const now = new Date("2026-09-27T12:00:00.000Z");
+    const store = new NodeChatConversationStore(root, { now: () => now });
+    await store.save([{
+      id: "conversation:canvas",
+      kind: "standalone",
+      agentProfileId: "casys-muse",
+      sessionKey: "casys-desktop-exclusive/standalone/conversation:canvas",
+      title: "Standalone",
+      status: "idle",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      messages: [],
+      canvasLayout: {
+        version: 1,
+        nodes: [],
+        groups: [],
+      },
+    }]);
+    const indexPath = `${root}/conversations.json`;
+    const index = JSON.parse(await Deno.readTextFile(indexPath));
+    index.conversations[0].canvasLayout = { version: 99, nodes: "nope" };
+    await Deno.writeTextFile(indexPath, JSON.stringify(index));
+    const loaded = await store.load();
+    assertEquals(loaded.length, 1);
+    assertEquals(loaded[0].canvasLayout, undefined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("Node store load isolates an invalid artifact manifest", async () => {
   const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
   try {
