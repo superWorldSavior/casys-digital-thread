@@ -5,10 +5,9 @@ import {
 } from "jsr:@std/assert@1.0.14";
 import { FileCockpitFocusStore } from "../../../src/adapters/project/file-cockpit-focus-store.ts";
 import { FileEngineeringProjectRevisionStore } from "../../../src/adapters/shared/stores/engineering-project-store.ts";
-import { FileThreadSnapshotStore } from "../../../src/adapters/shared/stores/file-thread-snapshot-store.ts";
 import type { EngineeringProjectSnapshot } from "../../../src/domain/project/engineering-project.ts";
+import { validateEngineeringProjectSnapshot } from "../../../src/domain/project/engineering-project-validation.ts";
 import { COCKPIT_FOCUS_SCHEMA_VERSION } from "../../../src/domain/project/cockpit-focus.ts";
-import type { ThreadSnapshot } from "../../../src/domain/thread/thread-snapshot.ts";
 import { PACKAGED_CONTROL_PLANE_ASSETS } from "../sidecar/embedded-assets.ts";
 import { materializeClosedWorkspace } from "../sidecar/workspace.ts";
 import {
@@ -24,7 +23,7 @@ const decoder = new TextDecoder();
 
 Deno.test({
   name:
-    "compiled Workbench reopens offline project focus, streams SSE, and leaves no orphan",
+    "compiled Workbench reopens offline project intent, streams SSE, and leaves no orphan",
   ignore: Deno.build.os !== "darwin",
   async fn() {
     const desktopRoot = decodeURIComponent(
@@ -42,9 +41,6 @@ Deno.test({
     const focusDirectory = `${materialized.workspaceRoot}/state/local/cockpit-focus`;
     const projectStore = new FileEngineeringProjectRevisionStore(projectDirectory);
     const focusStore = new FileCockpitFocusStore(focusDirectory);
-    await new FileThreadSnapshotStore(
-      `${materialized.workspaceRoot}/state/local/thread-snapshots`,
-    ).save(threadFixture());
     await projectStore.createInitial(projectFixture());
 
     const child = new Deno.Command(helper, {
@@ -117,8 +113,11 @@ Deno.test({
       );
       assertEquals(projection.status, 200);
       const body = await projection.json();
-      assertEquals(body.surface, "evidence");
+      assertEquals(body.surface, "planning");
       assertEquals(body.project.project.id, "offline-project");
+      assertEquals(body.project.threadSnapshots, []);
+      assertEquals(body.planning.technicalBaseline.status, "not-created");
+      assertEquals("thread" in body, false);
 
       const viewerSessions = await fetch(
         `${WORKBENCH_ORIGIN}/api/thread/viewer-sessions`,
@@ -295,11 +294,12 @@ Deno.test({
 });
 
 function projectFixture(): EngineeringProjectSnapshot {
-  return {
-    schemaVersion: "1.0",
+  const generatedAt = "2026-08-23T00:00:00.000Z";
+  return validateEngineeringProjectSnapshot({
+    schemaVersion: "4.0",
     id: "offline-project:r1",
     revision: 1,
-    generatedAt: "2026-08-23T00:00:00.000Z",
+    generatedAt,
     project: {
       id: "offline-project",
       name: "Offline project",
@@ -309,73 +309,33 @@ function projectFixture(): EngineeringProjectSnapshot {
         statement: "Prove the Desktop Workbench remains an offline read model.",
       },
     },
-    threadSnapshots: [{
-      snapshotId: "offline-thread-r1",
-      revision: 1,
-      subjectId: "offline-subject",
-    }],
+    framing: {
+      intent: {
+        statement: "Prove the Desktop Workbench remains an offline read model.",
+        source: { kind: "human", reference: "paired-conversation" },
+        capturedAt: generatedAt,
+        capturedBy: { id: "human:owner", origin: "human" },
+      },
+      questions: [],
+      answers: [],
+    },
+    threadSnapshots: [],
     phases: [],
     workItems: [],
     agentRuns: [],
     decisions: [],
     approvals: [],
     blockers: [],
-  };
-}
-
-function threadFixture(): ThreadSnapshot {
-  const at = "2026-08-23T00:00:00.000Z";
-  return {
-    schemaVersion: "1.0",
-    id: "offline-thread-r1",
-    revision: 1,
-    generatedAt: at,
-    subject: {
-      id: "offline-subject",
-      name: "Offline subject",
-      kind: "system",
-      version: "1",
-      modelArtifactId: "offline-model",
-    },
-    freshness: { status: "fresh", changedAt: at, invalidatedByChangeIds: [] },
-    changeSet: {
-      id: "offline-capture-r1",
-      name: "Capture the offline project baseline",
-      status: "applied",
-      createdAt: at,
-      appliedAt: at,
-      changes: [{
-        id: "offline-model-created",
-        kind: "created",
-        target: { kind: "artifact", id: "offline-model" },
-        summary: "Persist the exact offline baseline.",
-        afterFingerprint: { algorithm: "sha256", digest: "c".repeat(64) },
-      }],
-    },
-    artifacts: [{
-      id: "offline-model",
-      name: "Offline model",
-      kind: "other",
-      version: "1",
-      fingerprint: { algorithm: "sha256", digest: "c".repeat(64) },
-      producer: { serverId: "test", tool: "offline-fixture", runId: "offline-r1" },
-      inputArtifactIds: [],
-      freshness: { status: "fresh", changedAt: at, invalidatedByChangeIds: [] },
+    commandReceipts: [{
+      commandId: "start-offline-project",
+      type: "project.start",
+      actor: { id: "human:owner", origin: "human" },
+      issuedAt: generatedAt,
+      appliedAt: generatedAt,
+      requestFingerprint: { algorithm: "sha256", digest: "0".repeat(64) },
+      resultingSnapshot: { snapshotId: "offline-project:r1", revision: 1 },
     }],
-    consumptions: [],
-    observations: [],
-    requirements: [],
-    evaluations: [],
-    violations: [],
-    provenance: [{
-      id: "offline-change-artifact",
-      relation: "changes",
-      from: { kind: "change", id: "offline-model-created" },
-      to: { kind: "artifact", id: "offline-model" },
-      rationale: "The capture created this exact baseline artifact.",
-    }],
-    proposedActions: [],
-  };
+  });
 }
 
 function runHelper(

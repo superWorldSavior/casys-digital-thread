@@ -36,6 +36,8 @@ export interface AgentRuntimeFactoryOptions {
   readonly acpxRuntimeUrl: string;
   /** Pinned Codex binary version for status reporting. */
   readonly codexVersion: string;
+  /** An absent optional Codex artifact disables only that profile. */
+  readonly codexMissingReason?: string;
   /** Fixed Digital Thread relay URL for the project runtime. */
   readonly projectRelayUrl: string;
   readonly appEnv: Readonly<Record<string, string | undefined>>;
@@ -94,6 +96,11 @@ export class AgentRuntimeFactory implements AgentProfileHost {
     );
   }
 
+  /** Resolved executable passed to the bundled Muse adapter's child environment. */
+  museExecutablePath(): string | undefined {
+    return this.#museStatus.ok ? this.#museStatus.host.path : undefined;
+  }
+
   statusOf(profileId: string): AgentProfileStatus {
     const definition = this.definitions.find((entry) => entry.id === profileId);
     if (definition === undefined) throw new Error("agent profile is unknown");
@@ -103,7 +110,13 @@ export class AgentRuntimeFactory implements AgentProfileHost {
         : { definition, available: false, missingReason: this.#museStatus.reason };
     }
     if (profileId === CODEX_AGENT_PROFILE_ID) {
-      return { definition, available: true, version: this.#options.codexVersion };
+      return this.#options.codexMissingReason === undefined
+        ? { definition, available: true, version: this.#options.codexVersion }
+        : {
+          definition,
+          available: false,
+          missingReason: this.#options.codexMissingReason,
+        };
     }
     const cached = this.#customAvailability.get(profileId) ?? { available: false };
     return cached.available ? { definition, available: true } : {
@@ -168,18 +181,22 @@ export class AgentRuntimeFactory implements AgentProfileHost {
     if (!this.definitions.some((entry) => entry.id === profileId)) {
       throw new Error("agent profile is unknown");
     }
-    this.#storedDefault = profileId;
     await saveAgentProfilesFile(this.#options.dataRoot, {
       profiles: this.#customs,
       defaultProfileId: profileId,
     });
+    this.#storedDefault = profileId;
   }
 
   async reload(): Promise<
-    { readonly ok: true } | { readonly ok: false; readonly error: string }
+    | { readonly ok: true; readonly invalidatedRuntimeKeys: readonly string[] }
+    | { readonly ok: false; readonly error: string }
   > {
     const loaded = await loadAgentProfilesFile(this.#options.dataRoot);
     if (!loaded.ok) return { ok: false, error: loaded.error };
+    const previous = new Map(this.#customs.map((entry) => [entry.id, entry]));
+    const previousAvailability = new Map(this.#customAvailability);
+    const previousMusePath = this.museExecutablePath();
     this.#customs = loaded.file.profiles;
     this.#storedDefault = loaded.file.defaultProfileId;
     this.#museStatus = await resolveMuseHost(
@@ -187,11 +204,26 @@ export class AgentRuntimeFactory implements AgentProfileHost {
       this.#options.museDeps,
     );
     this.#refreshCustomAvailability();
-    const known = new Set(this.definitions.map((entry) => entry.id));
-    for (const key of this.#adapters.keys()) {
-      if (!known.has(profileIdOfRuntimeKey(key))) this.#adapters.delete(key);
+    const next = new Map(this.#customs.map((entry) => [entry.id, entry]));
+    const changed = new Set<string>();
+    for (const [id, former] of previous) {
+      const current = next.get(id);
+      if (
+        current === undefined || JSON.stringify(former) !== JSON.stringify(current) ||
+        previousAvailability.get(id)?.available !==
+          this.#customAvailability.get(id)?.available
+      ) changed.add(id);
     }
-    return { ok: true };
+    if (previousMusePath !== this.museExecutablePath()) {
+      changed.add(MUSE_AGENT_PROFILE_ID);
+    }
+    const invalidatedRuntimeKeys: string[] = [];
+    for (const key of this.#adapters.keys()) {
+      if (!changed.has(profileIdOfRuntimeKey(key))) continue;
+      this.#adapters.delete(key);
+      invalidatedRuntimeKeys.push(key);
+    }
+    return { ok: true, invalidatedRuntimeKeys: Object.freeze(invalidatedRuntimeKeys) };
   }
 
   async #createRuntime(

@@ -9,7 +9,16 @@ import type {
   DESKTOP_CHAT_PROTOCOL,
   DesktopChatBindingCommandRequest,
 } from "../../../presentation/desktop/chat/contracts.ts";
-import { type ChatViewerDispatch, ChatViewerPanel } from "./chat-viewer-panel.tsx";
+import {
+  type ChatViewerDispatch,
+  ChatViewerPanel,
+} from "./chat-viewer-panel.tsx";
+import { ChatCanvasSaveQueue } from "./chat-canvas-save-queue.ts";
+import { ChatSessionWorkList } from "./chat-session-work.tsx";
+import type {
+  ChatConversationDto,
+  ChatRetentionDto,
+} from "../../../presentation/desktop/chat/contracts.ts";
 import {
   addCanvasGroup,
   addCanvasNote,
@@ -27,14 +36,15 @@ import {
 export interface ChatCanvasProps {
   readonly conversationId: string;
   readonly viewers: readonly ChatToolViewerDto[];
+  readonly conversation: ChatConversationDto;
+  readonly retention: ChatRetentionDto | undefined;
   readonly dispatch: ChatViewerDispatch | undefined;
+  readonly saveQueue: ChatCanvasSaveQueue;
   readonly command: (
     request: DesktopChatBindingCommandRequest,
   ) => Promise<ChatCommandResponse | undefined>;
   readonly onClose: () => void;
 }
-
-const SAVE_DELAY_MS = 500;
 
 function protocol(): typeof DESKTOP_CHAT_PROTOCOL {
   return "casys-desktop-chat/1.0";
@@ -53,7 +63,10 @@ function requestId(): string {
 export function ChatCanvas({
   conversationId,
   viewers,
+  conversation,
+  retention,
   dispatch,
+  saveQueue,
   command,
   onClose,
 }: ChatCanvasProps): JSX.Element {
@@ -61,13 +74,11 @@ export function ChatCanvas({
     undefined,
   );
   const [error, setError] = useState<string | undefined>(undefined);
+  const [saveError, setSaveError] = useState<string | undefined>(undefined);
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [groupTitle, setGroupTitle] = useState("");
   const [noteText, setNoteText] = useState("");
-  const saveTimer = useRef<number | undefined>(undefined);
-  const layoutRef = useRef<ChatCanvasLayoutDto | undefined>(undefined);
-  layoutRef.current = layout;
-
+  useEffect(() => saveQueue.subscribe(setSaveError), [saveQueue]);
   useEffect(() => {
     let cancelled = false;
     setLayout(undefined);
@@ -80,52 +91,45 @@ export function ChatCanvas({
     }).then((response) => {
       if (cancelled) return;
       if (response?.ok && response.layout !== undefined) {
-        setLayout(response.layout);
+        setLayout(saveQueue.layout ?? response.layout);
       } else {
         setError(response?.error ?? "Canvas layout is unavailable.");
       }
     }).catch((cause: unknown) => {
       if (!cancelled) {
         setError(
-          cause instanceof Error ? cause.message : "Canvas layout failed to load.",
+          cause instanceof Error
+            ? cause.message
+            : "Canvas layout failed to load.",
         );
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [command, conversationId]);
+  }, [command, conversationId, saveQueue]);
 
-  useEffect(() => () => window.clearTimeout(saveTimer.current), []);
+  // The parent owns this queue across Canvas, chat, and conversation switches.
+  useEffect(() => () => {
+    void saveQueue.flush();
+  }, [saveQueue]);
 
-  const save = useCallback((next: ChatCanvasLayoutDto) => {
-    window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => {
-      void command({
-        protocol: protocol(),
-        requestId: requestId(),
-        command: "canvas.set-layout",
-        conversationId,
-        layout: layoutRef.current ?? next,
-      }).then((response) => {
-        if (!response?.ok) {
-          setError(response?.error ?? "Canvas layout failed to save.");
-        }
-      }).catch((cause: unknown) => {
-        setError(
-          cause instanceof Error ? cause.message : "Canvas layout failed to save.",
-        );
-      });
-    }, SAVE_DELAY_MS);
-  }, [command, conversationId]);
+  const close = useCallback(() => {
+    void saveQueue.flush().then((saved) => {
+      if (saved) onClose();
+      else setSaveError(saveQueue.error ?? "Canvas layout failed to save.");
+    });
+  }, [onClose, saveQueue]);
 
   const update = useCallback((next: ChatCanvasLayoutDto) => {
     setLayout(next);
-    save(next);
-  }, [save]);
+    setSaveError(undefined);
+    saveQueue.schedule(next);
+  }, [saveQueue]);
 
   const resolved = useMemo(
-    () => layout === undefined ? undefined : resolveCanvasNodes(layout, viewers),
+    () =>
+      layout === undefined ? undefined : resolveCanvasNodes(layout, viewers),
     [layout, viewers],
   );
 
@@ -133,7 +137,7 @@ export function ChatCanvas({
     return (
       <section className="desktop-chat-canvas" aria-label="Session canvas">
         <p className="desktop-chat-error" role="alert">{error}</p>
-        <Button type="button" variant="outline" size="sm" onClick={onClose}>
+        <Button type="button" variant="outline" size="sm" onClick={close}>
           Back to chat
         </Button>
       </section>
@@ -156,10 +160,32 @@ export function ChatCanvas({
       <div className="desktop-chat-project-line">
         <span>Canvas</span>
         <strong>Session board — not Thread evidence</strong>
-        <Button type="button" variant="outline" size="sm" onClick={onClose}>
+        <Button type="button" variant="outline" size="sm" onClick={close}>
           Back to chat
         </Button>
       </div>
+      {saveError !== undefined && (
+        <p className="desktop-chat-error" role="alert">
+          {saveError} Your edits remain here; retry Back to chat to save them.
+        </p>
+      )}
+      {conversation.kind === "standalone" && (
+        <ChatSessionWorkList
+          conversation={conversation}
+          retention={retention}
+          dispatch={dispatch}
+          command={command}
+          sendMessage={(text) => {
+            void command({
+              protocol: protocol(),
+              requestId: requestId(),
+              command: "message.send",
+              conversationId,
+              text,
+            });
+          }}
+        />
+      )}
       <div className="desktop-chat-canvas-toolbar">
         <label>
           Group
@@ -225,14 +251,14 @@ export function ChatCanvas({
           <span>New results:</span>
           {resolved.unplaced.map((viewer) => (
             <Button
-              key={viewer.toolCallId}
+              key={viewer.viewerId}
               type="button"
               variant="outline"
               size="sm"
               onClick={() =>
                 update(placeViewerNode(layout, {
                   id: `node:${crypto.randomUUID()}`,
-                  toolCallId: viewer.toolCallId,
+                  viewerId: viewer.viewerId,
                 }))}
             >
               Place {viewer.tool}
@@ -255,7 +281,8 @@ export function ChatCanvas({
             groups={resolved.groups}
             dispatch={dispatch}
             onMove={(x, y) => update(applyNodeMove(layout, node.id, x, y))}
-            onGroup={(groupId) => update(applyNodeGroup(layout, node.id, groupId))}
+            onGroup={(groupId) =>
+              update(applyNodeGroup(layout, node.id, groupId))}
             onTitle={(title) => update(applyNodeTitle(layout, node.id, title))}
             onText={(text) => update(applyNoteText(layout, node.id, text))}
             onDone={(done) => update(applyNoteDone(layout, node.id, done))}
@@ -353,11 +380,16 @@ function CanvasNode({
               autoFocus
               onChange={(event) => setDraftTitle(event.currentTarget.value)}
               onBlur={() => {
-                onTitle(draftTitle.trim() === "" ? undefined : draftTitle.trim());
+                onTitle(
+                  draftTitle.trim() === "" ? undefined : draftTitle.trim(),
+                );
                 setEditingTitle(false);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                if (event.key === "Enter") {
+                  (event.target as HTMLInputElement)
+                    .blur();
+                }
                 if (event.key === "Escape") {
                   setDraftTitle(node.title ?? "");
                   setEditingTitle(false);
@@ -385,7 +417,9 @@ function CanvasNode({
           aria-label="Node group"
           onChange={(event) =>
             onGroup(
-              event.currentTarget.value === "" ? undefined : event.currentTarget.value,
+              event.currentTarget.value === ""
+                ? undefined
+                : event.currentTarget.value,
             )}
         >
           <option value="">No group</option>

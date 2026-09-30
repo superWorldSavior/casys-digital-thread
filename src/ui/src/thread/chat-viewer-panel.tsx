@@ -18,17 +18,17 @@ import {
 export interface ChatViewerDispatch {
   readonly openViewer: (
     conversationId: string,
-    toolCallId: string,
+    viewerId: string,
   ) => Promise<ChatViewerSessionDto>;
   readonly callViewerTool: (
     conversationId: string,
-    toolCallId: string,
+    viewerId: string,
     name: string,
     args: unknown,
   ) => Promise<ChatViewerJson>;
   readonly readViewerResource: (
     conversationId: string,
-    toolCallId: string,
+    viewerId: string,
     uri: string,
   ) => Promise<ChatViewerResourceDto>;
   readonly fetchApp: (
@@ -91,19 +91,19 @@ export function ChatViewerPanel({
   // A with delegates pinned to tool call B.
   const openToken = useRef(0);
   const live = selected !== undefined
-    ? entries.find((entry) => entry.toolCallId === selected)
+    ? entries.find((entry) => entry.viewerId === selected)
     : undefined;
 
-  const open = useCallback(async (toolCallId: string) => {
+  const open = useCallback(async (viewerId: string) => {
     openToken.current += 1;
     const token = openToken.current;
-    setSelected(toolCallId);
+    setSelected(viewerId);
     setState({ phase: "opening" });
     try {
-      const opened = await dispatch.openViewer(conversationId, toolCallId);
-      // Never mount session data under a different tool-call identity than
+      const opened = await dispatch.openViewer(conversationId, viewerId);
+      // Never mount session data under a different retained-result identity than
       // the delegates and frame key bind: fail the open instead of mixing.
-      if (opened.toolCallId !== toolCallId) {
+      if (opened.viewerId !== viewerId) {
         throw new Error("Viewer session identity changed during open.");
       }
       const app = await dispatch.fetchApp(
@@ -131,7 +131,9 @@ export function ChatViewerPanel({
       if (openToken.current !== token) return;
       setState({
         phase: "error",
-        error: cause instanceof Error ? cause.message : "Viewer failed to open.",
+        error: cause instanceof Error
+          ? cause.message
+          : "Viewer failed to open.",
       });
     }
   }, [conversationId, dispatch]);
@@ -148,14 +150,14 @@ export function ChatViewerPanel({
     <div className="desktop-chat-viewers">
       {entries.map((entry) => (
         <Button
-          key={entry.toolCallId}
+          key={entry.viewerId}
           type="button"
           variant="outline"
           size="sm"
           disabled={state.phase === "opening"}
-          onClick={() => void open(entry.toolCallId)}
+          onClick={() => void open(entry.viewerId)}
         >
-          {state.phase !== "idle" && selected === entry.toolCallId
+          {state.phase !== "idle" && selected === entry.viewerId
             ? "Reload result viewer"
             : `View ${entry.tool} result`}
         </Button>
@@ -172,7 +174,7 @@ export function ChatViewerPanel({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => void open(live.toolCallId)}
+              onClick={() => void open(live.viewerId)}
             >
               Retry
             </Button>
@@ -182,18 +184,18 @@ export function ChatViewerPanel({
       {state.phase === "live" && live && (
         <>
           <ChatMcpAppViewer
-            key={`${conversationId}:${live.toolCallId}:${state.generation}`}
+            key={`${conversationId}:${live.viewerId}:${state.generation}`}
             app={state.app}
             session={state.session}
             callTool={(name, args) =>
               dispatch.callViewerTool(
                 conversationId,
-                live.toolCallId,
+                live.viewerId,
                 name,
                 args,
               )}
             readResource={(uri) =>
-              dispatch.readViewerResource(conversationId, live.toolCallId, uri)}
+              dispatch.readViewerResource(conversationId, live.viewerId, uri)}
             title={`${live.tool} result viewer`}
             onClose={() => {
               setSelected(undefined);
@@ -268,7 +270,7 @@ function ViewerExports({
     run(async () => {
       const resource = await dispatch.readViewerResource(
         conversationId,
-        viewer.toolCallId,
+        viewer.viewerId,
         uri,
       );
       const saved = await dispatch.saveFile(fileName, resource.data);

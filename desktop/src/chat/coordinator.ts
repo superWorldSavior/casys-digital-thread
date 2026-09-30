@@ -134,6 +134,8 @@ interface ConversationState {
   activeAbort?: AbortController;
   /** Epoch ms of the running turn start; scopes DEV tap attribution. */
   turnStartedAt?: number;
+  /** Fresh identity per turn; native ACP call ids may repeat later. */
+  captureTurnId?: string;
   pending?: PendingInteraction;
   queueTail: Promise<void>;
   /**
@@ -151,7 +153,12 @@ interface PendingInteraction {
 }
 
 interface CapturedToolResult {
+  readonly viewerId: string;
   readonly toolCallId: string;
+  readonly originAgentProfileId?: string;
+  readonly originSessionKey?: string;
+  readonly originAgentSessionId?: string;
+  readonly originTurnId?: string;
   readonly server: string;
   readonly tool: string;
   readonly messageId: string;
@@ -230,6 +237,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   readonly #sessionOwners = new Map<string, string>();
   #host: "ready" | "shutting-down" = "ready";
   #persistTail: Promise<void> = Promise.resolve();
+  #profileReloading = false;
   #stopPromise?: Promise<void>;
 
   private constructor(options: ChatCoordinatorOptions) {
@@ -333,6 +341,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   async command(request: ChatCommandRequest): Promise<ChatCommandResponse> {
     try {
       if (this.#host !== "ready") throw new Error("Chat Host is shutting down");
+      if (this.#profileReloading) throw new Error("Agent profiles are reloading");
       let conversationId: string;
       switch (request.command) {
         case "conversation.create":
@@ -395,9 +404,57 @@ export class ChatCoordinator implements RuntimeInteractionSink {
           });
         }
         case "agent.reload-profiles": {
-          const reloaded = await this.#agents.reload();
-          if (!reloaded.ok) throw new Error(reloaded.error);
-          if (await this.#remapUnknownProfiles()) await this.#persist();
+          for (const entry of this.#conversations.values()) {
+            if (
+              entry.activeTurn !== undefined || entry.status === "running" ||
+              entry.status === "queued" || entry.pending !== undefined
+            ) {
+              throw new Error(
+                "complete or cancel active turns before reloading agent profiles",
+              );
+            }
+          }
+          this.#profileReloading = true;
+          try {
+            const reloaded = await this.#agents.reload();
+            if (!reloaded.ok) throw new Error(reloaded.error);
+            const invalidated = new Set(reloaded.invalidatedRuntimeKeys);
+            for (const entry of this.#conversations.values()) {
+              if (!invalidated.has(this.#profiledRuntimeKey(entry))) continue;
+              await this.#detachHandle(entry, "Agent profile changed");
+              // Do not resume an ACP session created with the old launch
+              // definition under the same key after a profile file edit.
+              if (
+                this.#agents.definitions.some((profile) =>
+                  profile.id === entry.agentProfileId
+                )
+              ) {
+                entry.sessionKey = `${
+                  profileSessionKey(
+                    this.#baseSessionKey(entry),
+                    entry.agentProfileId,
+                  )
+                }/reload/${this.#newId()}`;
+                this.#append(
+                  entry,
+                  "system",
+                  "status",
+                  "Agent profile reloaded. The next turn starts a fresh session.",
+                );
+              }
+            }
+            for (const key of invalidated) {
+              const adapter = this.#runtimes.get(key);
+              if (adapter === undefined) continue;
+              this.unregisterRuntime(key);
+              await adapter.close().catch(() => undefined);
+            }
+            if (await this.#remapUnknownProfiles() || invalidated.size > 0) {
+              await this.#persist();
+            }
+          } finally {
+            this.#profileReloading = false;
+          }
           return Object.freeze({
             protocol: DESKTOP_CHAT_PROTOCOL,
             requestId: request.requestId,
@@ -413,6 +470,25 @@ export class ChatCoordinator implements RuntimeInteractionSink {
             ok: true,
             conversationId,
             viewer,
+          });
+        }
+        case "viewer.archive-read": {
+          conversationId = request.conversationId;
+          const conversation = this.#viewerConversation(conversationId);
+          const entry = this.#viewerEntry(conversation, request.viewerId);
+          return Object.freeze({
+            protocol: DESKTOP_CHAT_PROTOCOL,
+            requestId: request.requestId,
+            ok: true,
+            conversationId,
+            viewerCapture: Object.freeze({
+              viewerId: entry.viewerId,
+              toolCallId: entry.toolCallId,
+              tool: entry.tool,
+              server: entry.server,
+              toolInput: entry.input,
+              toolResult: entry.result,
+            }),
           });
         }
         case "viewer.tool-call": {
@@ -578,6 +654,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     }
     try {
       conversation.status = "running";
+      conversation.captureTurnId = `turn:${this.#newId()}`;
       conversation.updatedAt = this.#now().toISOString();
       await this.#ensureRuntimeFor(conversation);
       const runtime = this.#adapterFor(conversation).runtime;
@@ -667,6 +744,30 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       this.#abortPending(conversation);
       conversation.activeTurn = undefined;
       conversation.activeAbort = undefined;
+      conversation.captureTurnId = undefined;
+      const adapter = this.#runtimes.get(this.#profiledRuntimeKey(conversation));
+      if (
+        adapter?.refreshSessionPerTurn === true && conversation.handle !== undefined
+      ) {
+        const handle = conversation.handle;
+        try {
+          await adapter.runtime.close({
+            handle,
+            reason: "turn capture scope ended",
+            discardPersistentState: false,
+          });
+        } catch (error) {
+          this.#append(
+            conversation,
+            "system",
+            "error",
+            `Agent session close failed: ${safeError(error)}`,
+          );
+        } finally {
+          this.#releaseSessionIds(conversation);
+          conversation.handle = undefined;
+        }
+      }
       conversation.updatedAt = this.#now().toISOString();
       await this.#persist();
     }
@@ -694,8 +795,12 @@ export class ChatCoordinator implements RuntimeInteractionSink {
           : ` — ${clean(event.status, 80)}`;
         const id = this.#append(conversation, "assistant", "tool", `${title}${suffix}`);
         if (id !== undefined) {
-          touched.push(id);
-          await this.#captureToolResult(conversation, event, id);
+          const captured = await this.#captureToolResult(conversation, event, id);
+          if (captured === false) {
+            conversation.messages = conversation.messages.filter((message) =>
+              message.id !== id
+            );
+          } else touched.push(id);
         }
       } else {
         const id = this.#append(
@@ -723,7 +828,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     conversation: ConversationState,
     event: Extract<RuntimeEvent, { type: "tool_call" }>,
     messageId: string,
-  ): Promise<void> {
+  ): Promise<boolean | undefined> {
     const mcpId = conversation.mcpId;
     const toolCallId = event.toolCallId;
     if (
@@ -734,7 +839,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     if (input !== undefined && input.server === mcpId) {
       const output = parseMcpRawOutput(event.rawOutput);
       if (output === undefined) return;
-      await this.#retainToolResult(conversation, messageId, {
+      return await this.#retainToolResult(conversation, messageId, {
         mcpId,
         server: input.server,
         tool: input.tool,
@@ -743,11 +848,10 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         result: output.result,
         error: output.error,
       });
-      return;
     }
     const claude = parseClaudeStyleToolResult(event, mcpId);
     if (claude !== undefined) {
-      await this.#retainToolResult(conversation, messageId, {
+      return await this.#retainToolResult(conversation, messageId, {
         mcpId,
         server: mcpId,
         tool: claude.tool,
@@ -756,9 +860,14 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         result: claude.result,
         error: event.status === "failed" ? claude.result : undefined,
       });
-      return;
     }
-    await this.#captureFromTap(conversation, event, messageId, mcpId, toolCallId);
+    return await this.#captureFromTap(
+      conversation,
+      event,
+      messageId,
+      mcpId,
+      toolCallId,
+    );
   }
 
   /**
@@ -773,7 +882,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     messageId: string,
     mcpId: string,
     toolCallId: string,
-  ): Promise<void> {
+  ): Promise<boolean | undefined> {
     const lookup = this.#findMcpTapCall;
     const since = conversation.turnStartedAt;
     if (lookup === undefined || since === undefined) return;
@@ -795,7 +904,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     } catch {
       return;
     }
-    await this.#retainToolResult(conversation, messageId, {
+    return await this.#retainToolResult(conversation, messageId, {
       mcpId,
       server,
       tool,
@@ -818,7 +927,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       readonly result: unknown;
       readonly error: unknown;
     },
-  ): Promise<void> {
+  ): Promise<boolean | undefined> {
     const appUri = viewerAppUri(
       resolved.result,
       this.#mcpExpectedViews(resolved.mcpId),
@@ -836,16 +945,33 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     } catch {
       return;
     }
-    // A same-id redelivery replaces the entry but keeps its revision:
-    // revisions identify result versions, not observation counts.
-    const previous = conversation.toolResults.find((entry) =>
-      entry.toolCallId === resolved.toolCallId
-    );
-    const revision = previous?.revision ??
-      maxToolRevision(conversation.toolResults) + 1;
     const resultDigest = `sha256:${await sha256Hex(
       new TextEncoder().encode(JSON.stringify(parsedResult)),
     )}`;
+    const originAgentProfileId = conversation.agentProfileId;
+    const originSessionKey = conversation.sessionKey;
+    const originAgentSessionId = conversation.handle?.agentSessionId ??
+      conversation.handle?.backendSessionId ??
+      conversation.handle?.runtimeSessionName ?? originSessionKey;
+    const originTurnId = conversation.captureTurnId;
+    // A redelivery is idempotent only when it is the same call in the same
+    // agent session with the same exact input, outcome, and result. A reused
+    // native call id in another session (or with different bytes) is a new
+    // retained version, never a replacement of historical work.
+    if (
+      conversation.toolResults.some((entry) =>
+        entry.toolCallId === resolved.toolCallId &&
+        entry.originAgentProfileId === originAgentProfileId &&
+        entry.originSessionKey === originSessionKey &&
+        entry.originAgentSessionId === originAgentSessionId &&
+        entry.originTurnId === originTurnId &&
+        entry.server === resolved.server && entry.tool === resolved.tool &&
+        entry.appUri === appUri && entry.resultDigest === resultDigest &&
+        entry.failed === (resolved.error !== null && resolved.error !== undefined) &&
+        JSON.stringify(entry.input) === JSON.stringify(parsedInput)
+      )
+    ) return false;
+    const revision = maxToolRevision(conversation.toolResults) + 1;
     const payloads = await this.#fetchArchivePayloads(resolved.server, parsedResult);
     const artifacts = payloads.map((payload) =>
       Object.freeze({
@@ -873,11 +999,14 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     // queued earlier runs before the bytes exist, so prune can never eat
     // bytes ahead of their manifest.
     const appended = [
-      ...conversation.toolResults.filter((entry) =>
-        entry.toolCallId !== resolved.toolCallId
-      ),
+      ...conversation.toolResults,
       {
+        viewerId: messageId,
         toolCallId: resolved.toolCallId,
+        originAgentProfileId,
+        originSessionKey,
+        originAgentSessionId,
+        ...(originTurnId === undefined ? {} : { originTurnId }),
         server: resolved.server,
         tool: resolved.tool,
         messageId,
@@ -928,7 +1057,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     );
     if (failed.size > 0) {
       conversation.toolResults = conversation.toolResults.map((entry) =>
-        entry.toolCallId === resolved.toolCallId
+        entry.viewerId === messageId
           ? {
             ...entry,
             artifacts: (entry.artifacts ?? []).map((artifact) =>
@@ -945,6 +1074,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       );
     }
     await this.#persist();
+    return true;
   }
 
   /**
@@ -1010,27 +1140,34 @@ export class ChatCoordinator implements RuntimeInteractionSink {
 
   #viewerConversation(conversationId: string): ConversationState {
     const conversation = this.#conversation(conversationId);
-    if (
-      conversation.kind !== "standalone" || conversation.mcpId === undefined ||
-      conversation.mcpStatus !== "connected"
-    ) {
-      throw new Error("The live viewer requires a connected MCP session.");
-    }
+    if (conversation.kind !== "standalone") throw new Error("Unknown viewer session.");
     if (conversation.status === "closed") throw new Error("conversation is closed");
     return conversation;
   }
 
   #viewerEntry(
     conversation: ConversationState,
-    toolCallId: string,
+    viewerId: string,
   ): CapturedToolResult {
-    const entry = conversation.toolResults.find((candidate) =>
-      candidate.toolCallId === toolCallId
+    const exact = conversation.toolResults.find((candidate) =>
+      candidate.viewerId === viewerId
     );
-    if (entry === undefined || entry.server !== conversation.mcpId) {
+    const legacy = exact === undefined
+      ? conversation.toolResults.filter((candidate) =>
+        candidate.toolCallId === viewerId
+      )
+      : [];
+    const entry = exact ?? (legacy.length === 1 ? legacy[0] : undefined);
+    if (entry === undefined) {
       throw new Error("Unknown viewer session for this conversation.");
     }
     return entry;
+  }
+
+  #requireLiveViewer(conversation: ConversationState, entry: CapturedToolResult): void {
+    if (conversation.mcpStatus !== "connected" || conversation.mcpId !== entry.server) {
+      throw new Error("The live viewer requires its owning connected MCP session.");
+    }
   }
 
   /**
@@ -1040,18 +1177,28 @@ export class ChatCoordinator implements RuntimeInteractionSink {
    */
   #canvasLayout(conversationId: string): ChatCanvasLayoutDto {
     const conversation = this.#conversation(conversationId);
-    const retained = new Set(
-      conversation.toolResults.map((entry) => entry.toolCallId),
-    );
-    const nodes = conversation.canvasLayout.nodes.filter((node) =>
-      node.kind !== "viewer" || (node.toolCallId !== undefined &&
-        retained.has(node.toolCallId))
-    );
-    return Object.freeze({
+    const retained = new Set(conversation.toolResults.map((entry) => entry.viewerId));
+    const nodes = conversation.canvasLayout.nodes.flatMap((node) => {
+      if (node.kind !== "viewer") return [node];
+      if (node.viewerId !== undefined) {
+        return retained.has(node.viewerId) ? [node] : [];
+      }
+      // Old layouts named only the native tool id. Migrate only when it
+      // denotes one retained version; a collision must never rebind a node.
+      const matches = conversation.toolResults.filter((entry) =>
+        entry.toolCallId === node.toolCallId
+      );
+      if (matches.length !== 1) return [];
+      const { toolCallId: _legacy, ...rest } = node;
+      return [{ ...rest, viewerId: matches[0].viewerId }];
+    });
+    const layout = Object.freeze({
       version: CHAT_CANVAS_LAYOUT_VERSION,
       nodes: Object.freeze([...nodes]),
       groups: conversation.canvasLayout.groups,
     });
+    conversation.canvasLayout = layout;
+    return layout;
   }
 
   async #setCanvasLayout(
@@ -1061,6 +1208,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     const conversation = this.#conversation(conversationId);
     if (conversation.status === "closed") throw new Error("conversation is closed");
     conversation.canvasLayout = layout;
+    this.#canvasLayout(conversationId);
     conversation.updatedAt = new Date().toISOString();
     await this.#persist();
   }
@@ -1071,11 +1219,13 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   ): Promise<ChatViewerSessionDto> {
     const conversation = this.#viewerConversation(conversationId);
     const entry = this.#viewerEntry(conversation, toolCallId);
+    this.#requireLiveViewer(conversation, entry);
     if (!this.#mcpExpectedViews(entry.server).includes(entry.appUri)) {
       throw new Error("Unknown viewer session for this conversation.");
     }
     const app = await this.#viewerBackend.resolveApp(entry.server, entry.appUri);
     return Object.freeze({
+      viewerId: entry.viewerId,
       toolCallId: entry.toolCallId,
       tool: entry.tool,
       server: entry.server,
@@ -1104,6 +1254,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   ): Promise<ChatViewerJson> {
     const conversation = this.#viewerConversation(conversationId);
     const entry = this.#viewerEntry(conversation, toolCallId);
+    this.#requireLiveViewer(conversation, entry);
     if (!conversation.mcpTools.includes(name)) {
       throw new Error("The session cannot authorize this tool.");
     }
@@ -1118,14 +1269,6 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   async #viewerResourceRead(conversationId: string, toolCallId: string, uri: string) {
     const conversation = this.#viewerConversation(conversationId);
     const entry = this.#viewerEntry(conversation, toolCallId);
-    const admitted = this.#mcpExpectedViews(entry.server);
-    const scope = viewerResourceScope(admitted);
-    const inViewScope = admitted.includes(uri) ||
-      (scope !== undefined && uri.startsWith(scope));
-    const inArtifactScope = uri.startsWith(`casys://${entry.server}/`);
-    if (!inViewScope && !inArtifactScope) {
-      throw new Error("The session cannot authorize this resource.");
-    }
     // Retained artifact bytes win over a live read: the archive is the
     // exact saved result, while provider-side exports may have moved on or
     // vanished with a provider restart. View-scope resources always read
@@ -1152,7 +1295,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       // Stale manifest (pruned or tampered bytes): mark missing honestly
       // and fall through to a live read instead of failing the viewer.
       conversation.toolResults = conversation.toolResults.map((candidate) =>
-        candidate.toolCallId === entry.toolCallId
+        candidate.viewerId === entry.viewerId
           ? {
             ...candidate,
             artifacts: (candidate.artifacts ?? []).map((artifact) =>
@@ -1168,6 +1311,15 @@ export class ChatCoordinator implements RuntimeInteractionSink {
           : candidate
       );
       void this.#persist();
+    }
+    this.#requireLiveViewer(conversation, entry);
+    const admitted = this.#mcpExpectedViews(entry.server);
+    const scope = viewerResourceScope(admitted);
+    const inViewScope = admitted.includes(uri) ||
+      (scope !== undefined && uri.startsWith(scope));
+    const inArtifactScope = uri.startsWith(`casys://${entry.server}/`);
+    if (!inViewScope && !inArtifactScope) {
+      throw new Error("The session cannot authorize this resource.");
     }
     const result = await this.#viewerBackend.readResource(entry.server, uri);
     const payload = parseViewerResourcePayload(uri, result, "live");
@@ -1763,45 +1915,42 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         tools: Object.freeze(conversation.mcpTools.slice(0, 64)),
       });
     }
-    // List only viewers of the currently attached server. Entries stay
-    // stored across an MCP switch for later persistence (#51); unopenable
-    // stale buttons must not leak into another server's listing.
+    // Saved work remains visible across MCP switches and provider removal.
+    // Live App/tool commands separately require the owning connection.
     const viewers: ChatToolViewerDto[] = includeMessages
-      ? conversation.toolResults.filter((entry) => entry.server === conversation.mcpId)
-        .map((entry) =>
-          Object.freeze({
-            toolCallId: entry.toolCallId,
-            messageId: entry.messageId,
-            tool: entry.tool,
-            appUri: entry.appUri,
-            ...(entry.revision === undefined || entry.resultDigest === undefined
-              ? {}
-              : {
-                archive: Object.freeze({
-                  revision: entry.revision,
-                  resultDigest: entry.resultDigest,
-                  server: entry.server,
-                  capturedAt: entry.capturedAt,
-                  failed: entry.failed,
-                  artifacts: Object.freeze(
-                    (entry.artifacts ?? []).map((artifact) =>
-                      Object.freeze({
-                        uri: artifact.uri,
-                        fileName: artifact.fileName,
-                        mimeType: artifact.mimeType,
-                        bytes: artifact.bytes,
-                        sha256: artifact.sha256,
-                        state: artifact.state,
-                        ...(artifact.reason === undefined
-                          ? {}
-                          : { reason: artifact.reason }),
-                      })
-                    ),
-                  ),
-                }),
-              }),
-          })
-        )
+      ? conversation.toolResults.map((entry) =>
+        Object.freeze({
+          viewerId: entry.viewerId,
+          toolCallId: entry.toolCallId,
+          messageId: entry.messageId,
+          tool: entry.tool,
+          appUri: entry.appUri,
+          ...(entry.revision === undefined || entry.resultDigest === undefined ? {} : {
+            archive: Object.freeze({
+              revision: entry.revision,
+              resultDigest: entry.resultDigest,
+              server: entry.server,
+              capturedAt: entry.capturedAt,
+              failed: entry.failed,
+              artifacts: Object.freeze(
+                (entry.artifacts ?? []).map((artifact) =>
+                  Object.freeze({
+                    uri: artifact.uri,
+                    fileName: artifact.fileName,
+                    mimeType: artifact.mimeType,
+                    bytes: artifact.bytes,
+                    sha256: artifact.sha256,
+                    state: artifact.state,
+                    ...(artifact.reason === undefined
+                      ? {}
+                      : { reason: artifact.reason }),
+                  })
+                ),
+              ),
+            }),
+          }),
+        })
+      )
       : [];
     return Object.freeze({
       id: conversation.id,
@@ -1929,7 +2078,20 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         knownMessageIdsByKey: serializeKnownByKey(entry),
         toolResults: Object.freeze(entry.toolResults.map((result) =>
           Object.freeze({
+            viewerId: result.viewerId,
             toolCallId: result.toolCallId,
+            ...(result.originAgentProfileId === undefined
+              ? {}
+              : { originAgentProfileId: result.originAgentProfileId }),
+            ...(result.originSessionKey === undefined
+              ? {}
+              : { originSessionKey: result.originSessionKey }),
+            ...(result.originAgentSessionId === undefined
+              ? {}
+              : { originAgentSessionId: result.originAgentSessionId }),
+            ...(result.originTurnId === undefined
+              ? {}
+              : { originTurnId: result.originTurnId }),
             server: result.server,
             tool: result.tool,
             messageId: result.messageId,
@@ -2064,6 +2226,7 @@ function restoreToolResults(stored: StoredConversation): CapturedToolResult[] {
   const results = stored.toolResults;
   if (!Array.isArray(results)) return [];
   const restored: CapturedToolResult[] = [];
+  const seenViewerIds = new Set<string>();
   for (const entry of results.slice(-TOOL_RESULTS_MAX)) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
     const candidate = entry as Record<string, unknown>;
@@ -2079,6 +2242,10 @@ function restoreToolResults(stored: StoredConversation): CapturedToolResult[] {
       typeof candidate.capturedAt !== "string" ||
       !Number.isFinite(Date.parse(candidate.capturedAt))
     ) continue;
+    const viewerId = candidate.viewerId === undefined
+      ? candidate.toolCallId
+      : candidate.viewerId;
+    if (!isChatOpaqueId(viewerId) || seenViewerIds.has(viewerId)) continue;
     let input: Readonly<Record<string, ChatViewerJson>>;
     let result: ChatViewerJson;
     try {
@@ -2104,8 +2271,29 @@ function restoreToolResults(stored: StoredConversation): CapturedToolResult[] {
     const artifacts = readRestoredArtifacts(candidate.artifacts);
     const archived = revision !== undefined && resultDigest !== undefined &&
       artifacts !== undefined;
+    seenViewerIds.add(viewerId);
     restored.push({
+      viewerId,
       toolCallId: candidate.toolCallId,
+      ...(typeof candidate.originAgentProfileId === "string" &&
+          /^[a-z0-9][a-z0-9-]{0,47}$/.test(candidate.originAgentProfileId) &&
+          typeof candidate.originSessionKey === "string" &&
+          candidate.originSessionKey.length > 0 &&
+          candidate.originSessionKey.length <= 500 &&
+          typeof candidate.originAgentSessionId === "string" &&
+          candidate.originAgentSessionId.length > 0 &&
+          candidate.originAgentSessionId.length <= 200
+        ? {
+          originAgentProfileId: candidate.originAgentProfileId,
+          originSessionKey: candidate.originSessionKey,
+          originAgentSessionId: candidate.originAgentSessionId,
+          ...(typeof candidate.originTurnId === "string" &&
+              candidate.originTurnId.length > 0 &&
+              candidate.originTurnId.length <= 160
+            ? { originTurnId: candidate.originTurnId }
+            : {}),
+        }
+        : {}),
       server: candidate.server,
       tool: candidate.tool,
       messageId: candidate.messageId,

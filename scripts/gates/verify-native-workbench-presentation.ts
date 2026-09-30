@@ -6,16 +6,20 @@
  * read-only Apps lifecycle for an exact registered whole App.
  *
  * `postMessage` is deliberately not a marker: react-dom's scheduler uses a
- * MessageChannel, so the literal appears in any React bundle. The two
- * remaining markers identify provider authority, tool-result hydration or a
- * retired native domain renderer. `ui/initialize` is intentionally allowed:
- * it is required by the minimal read-only iframe host.
+ * MessageChannel, so the literal appears in any React bundle. Provider
+ * authority is checked on the actual Workbench import graph because the same
+ * shell also mounts the independent Chat. Retired domain renderers and unsafe
+ * iframe origin permissions remain forbidden across the whole shell.
+ * `ui/initialize` is required by the minimal read-only iframe host.
  */
+import {
+  authorityMarkersInGraph,
+  FORBIDDEN_WORKBENCH_AUTHORITY_MARKERS,
+  type WorkbenchAuthorityGraph,
+} from "./workbench-authority-graph.ts";
 
 export const FORBIDDEN_NATIVE_BUNDLE_MARKERS = [
-  "serverTools",
-  "serverResources",
-  "ui/notifications/tool-result",
+  ...FORBIDDEN_WORKBENCH_AUTHORITY_MARKERS,
   "allow-same-origin",
   "GLTFLoader",
   "STLLoader",
@@ -141,6 +145,8 @@ export const FORBIDDEN_NATIVE_PRESENTATION_PATHS = [
 export interface PresentationBoundaryInput {
   readonly primitiveAdapterSource: string;
   readonly nativeBundle: string;
+  /** Omission retains the strict legacy whole-bundle authority check. */
+  readonly workbenchAuthorityGraph?: WorkbenchAuthorityGraph;
   readonly presentForbiddenPaths?: readonly string[];
 }
 
@@ -167,13 +173,37 @@ export function evaluatePresentationBoundary(
     );
   }
 
-  const runtimeMarkers = findMarkers(input.nativeBundle);
+  const runtimeMarkers = findMarkers(
+    input.nativeBundle,
+    input.workbenchAuthorityGraph === undefined
+      ? FORBIDDEN_NATIVE_BUNDLE_MARKERS
+      : FORBIDDEN_NATIVE_BUNDLE_MARKERS.filter((marker) =>
+        !FORBIDDEN_WORKBENCH_AUTHORITY_MARKERS.includes(
+          marker as typeof FORBIDDEN_WORKBENCH_AUTHORITY_MARKERS[number],
+        )
+      ),
+  );
   if (runtimeMarkers.length > 0) {
     errors.push(
       `native Workbench source or bundle contains provider authority or native viewer markers: ${
         runtimeMarkers.join(", ")
       }.`,
     );
+  }
+
+  if (input.workbenchAuthorityGraph !== undefined) {
+    try {
+      const markers = authorityMarkersInGraph(input.workbenchAuthorityGraph);
+      if (markers.length > 0) {
+        errors.push(
+          `read-only Workbench import graph contains provider authority markers: ${
+            markers.join(", ")
+          }.`,
+        );
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if ((input.presentForbiddenPaths?.length ?? 0) > 0) {
@@ -202,8 +232,8 @@ async function existingForbiddenPresentationPaths(): Promise<
   return present;
 }
 
-function findMarkers(bundle: string): string[] {
-  return FORBIDDEN_NATIVE_BUNDLE_MARKERS.filter((marker) => bundle.includes(marker));
+function findMarkers(bundle: string, markers: readonly string[]): string[] {
+  return markers.filter((marker) => bundle.includes(marker));
 }
 
 function findMcpViewImports(source: string): string[] {
@@ -233,6 +263,7 @@ if (import.meta.main) {
   const [
     primitiveAdapterSource,
     nativeBundle,
+    workbenchAuthorityGraph,
     inspectorModelSource,
     overviewSource,
     operationsSource,
@@ -254,6 +285,8 @@ if (import.meta.main) {
   ] = await Promise.all([
     Deno.readTextFile("src/ui/src/mcp-view-primitives.ts"),
     readNativeWorkbenchBundle(),
+    Deno.readTextFile("src/ui/dist/thread/workbench-authority-graph.json")
+      .then((source) => JSON.parse(source) as WorkbenchAuthorityGraph),
     Deno.readTextFile("src/ui/src/thread/tool-inspector-model.ts"),
     Deno.readTextFile("src/ui/src/project/overview.tsx"),
     Deno.readTextFile("src/ui/src/project/work.tsx"),
@@ -275,6 +308,7 @@ if (import.meta.main) {
   ]);
   const result = evaluatePresentationBoundary({
     primitiveAdapterSource,
+    workbenchAuthorityGraph,
     nativeBundle: [
       nativeBundle,
       inspectorModelSource,

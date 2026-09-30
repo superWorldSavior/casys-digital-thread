@@ -574,7 +574,9 @@ function isProjectPathProjection(
         engineeringActivityIdFromRootRevision(expected.rootRevisionId) ||
       activity.rootRevisionId !== expected.rootRevisionId ||
       activity.revisionIds.length !== expected.revisionIds.length ||
-      activity.revisionIds.some((id, index) => id !== expected.revisionIds[index])
+      activity.revisionIds.some((id, index) =>
+        id !== expected.revisionIds[index]
+      )
     ) {
       return false;
     }
@@ -1102,7 +1104,9 @@ export function isThreadWorkbenchSnapshot(
     Array.isArray(candidate.artifacts) &&
     candidate.artifacts.every(isThreadArtifact) &&
     (candidate.engineeringCases === undefined
-      ? candidate.graph.nodes.every((node) => node.engineeringCaseRefs === undefined)
+      ? candidate.graph.nodes.every((node) =>
+        node.engineeringCaseRefs === undefined
+      )
       : isEngineeringCaseCatalog(
         candidate.engineeringCases,
         candidate.artifacts,
@@ -1527,7 +1531,9 @@ function isThreadRequirementHistoricalObservationRef(
   ) {
     return false;
   }
-  const ids = value.sourceArtifacts.map((item) => isRecord(item) ? item.id : undefined);
+  const ids = value.sourceArtifacts.map((item) =>
+    isRecord(item) ? item.id : undefined
+  );
   return value.sourceArtifacts.every(isThreadRequirementHistoricalRef) &&
     ids.every((id) => typeof id === "string") &&
     new Set(ids).size === ids.length;
@@ -1981,7 +1987,9 @@ function matchesEngineeringCaseCatalog(
     `${item.family}:${item.caseDigest}`
   );
   if (!hasUniqueStrings(exactCaseIdentities)) return false;
-  const authorityIds = catalog.cases.flatMap((item) => item.authorityArtifactIds);
+  const authorityIds = catalog.cases.flatMap((item) =>
+    item.authorityArtifactIds
+  );
   if (!hasUniqueStrings(authorityIds)) return false;
   const coverageByFamily = new Map(
     catalog.coverage.map((item) => [item.family, item.status]),
@@ -2110,7 +2118,9 @@ function isWorksheetQuantity(value: unknown): boolean {
     "sourceIndex",
     "assumption",
   ]) &&
-    ["id", "value", "unit", "sourceIndex"].every((key) => Object.hasOwn(value, key)) &&
+    ["id", "value", "unit", "sourceIndex"].every((key) =>
+      Object.hasOwn(value, key)
+    ) &&
     typeof candidate.id === "string" && candidate.id.length > 0 &&
     (candidate.label === undefined ||
       (typeof candidate.label === "string" && candidate.label.length > 0)) &&
@@ -2133,10 +2143,16 @@ function isWorksheetSource(value: unknown): boolean {
       typeof candidate.digest === "string" && isSha256Digest(candidate.digest);
   }
   if (candidate.kind === "thread-artifact") {
-    return hasExactKeys(value, ["kind", "artifactId", "digest", "producerRunId"]) &&
+    return hasExactKeys(value, [
+      "kind",
+      "artifactId",
+      "digest",
+      "producerRunId",
+    ]) &&
       typeof candidate.artifactId === "string" &&
       candidate.artifactId.length > 0 &&
-      typeof candidate.digest === "string" && isSha256Digest(candidate.digest) &&
+      typeof candidate.digest === "string" &&
+      isSha256Digest(candidate.digest) &&
       typeof candidate.producerRunId === "string" &&
       candidate.producerRunId.length > 0;
   }
@@ -2278,17 +2294,20 @@ const ENGINEERING_CASE_AUTHORITY: Record<
   },
   "sensitivity-study": {
     producedBy: "analyze.seal-sensitivity-study@1",
-    artifactId: (_captureDigest, caseDigest) => `sensitivity-case-${caseDigest}`,
+    artifactId: (_captureDigest, caseDigest) =>
+      `sensitivity-case-${caseDigest}`,
     uriPrefix: "casys://sensitivity-study-case-capture/sha256/",
   },
   "printability-check": {
     producedBy: "industrialize.seal-printability-case@1",
-    artifactId: (_captureDigest, caseDigest) => `printability-case-${caseDigest}`,
+    artifactId: (_captureDigest, caseDigest) =>
+      `printability-case-${caseDigest}`,
     uriPrefix: "casys://printability-case-capture/sha256/",
   },
   "print-estimate": {
     producedBy: "industrialize.seal-print-estimate-case@1",
-    artifactId: (_captureDigest, caseDigest) => `print-estimate-case-${caseDigest}`,
+    artifactId: (_captureDigest, caseDigest) =>
+      `print-estimate-case-${caseDigest}`,
     uriPrefix: "casys://print-estimate-case-capture/sha256/",
   },
   "dfm-check": {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, JSX } from "react";
 import { Badge, type BadgeProps } from "../ui/badge.tsx";
 import { Button, buttonVariants } from "../ui/button.tsx";
+import { CARD_SURFACE } from "../ui/cockpit.tsx";
 import { cn } from "../lib/utils.ts";
 import { Notice } from "../ui/notice.tsx";
 import {
@@ -33,6 +34,7 @@ import {
   ChatViewerPanel,
 } from "./chat-viewer-panel.tsx";
 import { ChatCanvas } from "./chat-canvas.tsx";
+import { ChatCanvasSaveQueue } from "./chat-canvas-save-queue.ts";
 import { ChatSessionWorkList } from "./chat-session-work.tsx";
 import {
   type CatalogueCommandResponse,
@@ -195,6 +197,37 @@ export function DesktopChat(
     [bindings, refresh],
   );
 
+  const commandRef = useRef(command);
+  commandRef.current = command;
+  const canvasQueues = useRef(new Map<string, ChatCanvasSaveQueue>());
+  const selectionToken = useRef(0);
+  const canvasQueueFor = useCallback((conversationId: string) => {
+    let queue = canvasQueues.current.get(conversationId);
+    if (queue === undefined) {
+      queue = new ChatCanvasSaveQueue(
+        async (layout) => {
+          const response = await commandRef.current({
+            protocol: DESKTOP_CHAT_PROTOCOL,
+            requestId: requestId(),
+            command: "canvas.set-layout",
+            conversationId,
+            layout,
+          });
+          if (!response?.ok) {
+            throw new Error(response?.error ?? "Canvas layout failed to save.");
+          }
+        },
+        (message) => setError(message),
+      );
+      canvasQueues.current.set(conversationId, queue);
+    }
+    return queue;
+  }, []);
+
+  useEffect(() => () => {
+    for (const queue of canvasQueues.current.values()) void queue.flush();
+  }, []);
+
   // Header attach path: same prepare-then-enable contract as the catalogue
   // card. This surface carries no availability snapshot, so prepare always
   // runs (idempotent reuse when ready) and enable follows only on prepared.
@@ -237,12 +270,14 @@ export function DesktopChat(
     [bindings, command],
   );
 
+  // The legacy command field is named toolCallId; the host resolves the
+  // retained viewerId carried in it to avoid native call-id collisions.
   const viewerDispatch: ChatViewerDispatch | undefined = bindings === undefined
     ? undefined
     : {
       openViewer: async (
         conversationId: string,
-        toolCallId: string,
+        viewerId: string,
       ): Promise<ChatViewerSessionDto> => {
         const response = parseChatCommandResponse(
           await bindings.casysChatCommand({
@@ -250,7 +285,7 @@ export function DesktopChat(
             requestId: requestId(),
             command: "viewer.open",
             conversationId,
-            toolCallId,
+            toolCallId: viewerId,
           }),
         );
         if (!response.ok || response.viewer === undefined) {
@@ -260,7 +295,7 @@ export function DesktopChat(
       },
       callViewerTool: async (
         conversationId: string,
-        toolCallId: string,
+        viewerId: string,
         name: string,
         args: unknown,
       ): Promise<ChatViewerJson> => {
@@ -270,7 +305,7 @@ export function DesktopChat(
             requestId: requestId(),
             command: "viewer.tool-call",
             conversationId,
-            toolCallId,
+            toolCallId: viewerId,
             name,
             arguments: parseChatViewerArguments(args),
           }),
@@ -282,7 +317,7 @@ export function DesktopChat(
       },
       readViewerResource: async (
         conversationId: string,
-        toolCallId: string,
+        viewerId: string,
         uri: string,
       ): Promise<ChatViewerResourceDto> => {
         const response = parseChatCommandResponse(
@@ -291,7 +326,7 @@ export function DesktopChat(
             requestId: requestId(),
             command: "viewer.resource-read",
             conversationId,
-            toolCallId,
+            toolCallId: viewerId,
             uri,
           }),
         );
@@ -350,6 +385,21 @@ export function DesktopChat(
       conversation.kind === "project" && conversation.projectId === projectId
     ) ?? [];
   const selected = selectedConversation(snapshot, selectedId, projectId);
+  const selectConversation = useCallback((id: string | null) => {
+    const token = ++selectionToken.current;
+    const queue = selected?.id === undefined
+      ? undefined
+      : canvasQueues.current.get(selected.id);
+    if (queue === undefined || !queue.hasPending) {
+      setSelectedId(id);
+      return;
+    }
+    void queue.flush().then((saved) => {
+      if (token !== selectionToken.current) return;
+      if (saved) setSelectedId(id);
+      else setError(queue.error ?? "Canvas layout failed to save.");
+    });
+  }, [selected?.id]);
   const panel = (
     <ArkDialog.Content className="desktop-chat-panel">
       <header className="desktop-chat-head">
@@ -386,7 +436,9 @@ export function DesktopChat(
               variant="ghost"
               size="sm"
               className="desktop-chat-close h-8 px-2"
-              aria-label="Close chat"
+              aria-label={fixedPanelAvailable
+                ? "Close project chat"
+                : "Close chat"}
             >
               Close
             </Button>
@@ -398,7 +450,7 @@ export function DesktopChat(
         project={projectConversations}
         projectId={projectId}
         selectedId={selected?.id}
-        onSelect={setSelectedId}
+        onSelect={selectConversation}
         interactive={nativeChatAvailable}
       />
       {!nativeChatAvailable
@@ -419,6 +471,7 @@ export function DesktopChat(
           <Conversation
             key={selected.id}
             conversation={selected}
+            canvasQueue={canvasQueueFor(selected.id)}
             connectableMcps={snapshot?.connectableMcps ?? []}
             busy={busy}
             command={command}
@@ -782,6 +835,7 @@ interface CommandProps {
 
 function Conversation({
   conversation,
+  canvasQueue,
   connectableMcps,
   busy,
   command,
@@ -790,6 +844,7 @@ function Conversation({
   retention,
 }: CommandProps & {
   readonly conversation: ChatConversationDto;
+  readonly canvasQueue: ChatCanvasSaveQueue;
   readonly connectableMcps: readonly ChatConnectableMcpDto[];
   readonly onConnect: (conversationId: string, mcpId: string) => void;
   readonly viewerDispatch: ChatViewerDispatch | undefined;
@@ -816,8 +871,11 @@ function Conversation({
       <div className="desktop-chat-conversation">
         <ChatCanvas
           conversationId={conversation.id}
+          conversation={conversation}
+          retention={retention}
           viewers={conversation.viewers}
           dispatch={viewerDispatch}
+          saveQueue={canvasQueue}
           command={command}
           onClose={() => setCanvasOpen(false)}
         />
@@ -859,6 +917,8 @@ function Conversation({
         <ChatSessionWorkList
           conversation={conversation}
           retention={retention}
+          dispatch={viewerDispatch}
+          command={command}
           sendMessage={(text) =>
             void command({
               protocol: DESKTOP_CHAT_PROTOCOL,
@@ -1602,7 +1662,7 @@ function CatalogueEntryCard({
       conversationId: conversation.id,
     });
   return (
-    <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
+    <section className={cn(CARD_SURFACE, "p-4 shadow-sm")}>
       <div className="desktop-chat-project-line">
         <strong>{entry.displayName}</strong>
         <span>{entry.tagline}</span>

@@ -48,7 +48,8 @@ import {
 
 const legendRowClass =
   "flex items-center justify-between gap-2 rounded-sm px-1 py-[3px] text-[11.5px] leading-tight";
-const legendCountClass = "font-mono text-[10px] text-muted-foreground tabular-nums";
+const legendCountClass =
+  "font-mono text-[10px] text-muted-foreground tabular-nums";
 const legendTitleClass = cn("mb-0.5", SECTION_LABEL);
 const NEIGHBOR_DEPTHS = [1, 2, 3] as const;
 
@@ -277,7 +278,9 @@ export function EvidenceExploration({
     const selectedEdgeOccurrenceKey = selection?.kind === "edge"
       ? selection.occurrence?.key
       : undefined;
-    const depths = projection.isFiltered ? projection.localDepthByRefKey : undefined;
+    const depths = projection.isFiltered
+      ? projection.localDepthByRefKey
+      : undefined;
     const hiddenAtDepth = (key: string, attrs: SigmaNodeAttrs): boolean => {
       if (depths && displayDepth !== undefined) {
         if ((depths.get(key) ?? 0) > displayDepth) return true;
@@ -340,7 +343,9 @@ export function EvidenceExploration({
   // the TYPES, OUTILS and COMPOSANTES counts must reflect what is on screen,
   // not the computed max-depth neighbourhood.
   const { systemLegend, kindLegend } = useMemo(() => {
-    const depths = projection.isFiltered ? projection.localDepthByRefKey : undefined;
+    const depths = projection.isFiltered
+      ? projection.localDepthByRefKey
+      : undefined;
     const filtersActive = (depths && displayDepth !== undefined) ||
       visibleKinds !== undefined;
     const isVisible = (key: string, attrs: SigmaNodeAttrs): boolean => {
@@ -405,8 +410,11 @@ export function EvidenceExploration({
   // compact Activity previews because they intentionally cannot inspect edges.
   const navigation = useMemo(() => {
     const visibleNodeKeys = new Set<string>();
-    const nodes: Array<{ key: string; label: string; ref: ThreadGraphRef }> = [];
-    const depths = projection.isFiltered ? projection.localDepthByRefKey : undefined;
+    const nodes: Array<{ key: string; label: string; ref: ThreadGraphRef }> =
+      [];
+    const depths = projection.isFiltered
+      ? projection.localDepthByRefKey
+      : undefined;
     explorationModel.graph.forEachNode((key, attrs) => {
       if (
         depths && displayDepth !== undefined &&
@@ -535,7 +543,8 @@ export function EvidenceExploration({
                     "bg-accent text-accent-foreground",
                 )}
                 aria-pressed={verificationCaseFilter.kind === "all"}
-                onClick={() => onVerificationCaseFilterChange?.({ kind: "all" })}
+                onClick={() =>
+                  onVerificationCaseFilterChange?.({ kind: "all" })}
               >
                 <span className="truncate">All records</span>
                 <span className={legendCountClass}>
@@ -620,7 +629,9 @@ export function EvidenceExploration({
                 className="flex justify-between px-px font-mono text-[9px] tabular-nums text-muted-foreground"
                 aria-hidden="true"
               >
-                {NEIGHBOR_DEPTHS.map((depth) => <span key={depth}>{depth}</span>)}
+                {NEIGHBOR_DEPTHS.map((depth) => (
+                  <span key={depth}>{depth}</span>
+                ))}
               </div>
               <p className="text-[9.5px] leading-snug text-muted-foreground">
                 {projection.isFiltered
@@ -756,11 +767,12 @@ function ExplorationKeyboardNavigation({
   return (
     <details className="mt-1 w-full max-[720px]:basis-full">
       <summary className={cn("cursor-pointer", SECTION_LABEL)}>
-        Accessible evidence table ({nodes.length} items · {edges.length} relations)
+        Accessible evidence table ({nodes.length} items · {edges.length}{" "}
+        relations)
       </summary>
       <p className="mt-1.5 text-[11px] text-muted-foreground">
-        Use Tab to reach a record, then press Enter to inspect it. A shared canvas route
-        is listed here once per exact recorded assertion.
+        Use Tab to reach a record, then press Enter to inspect it. A shared
+        canvas route is listed here once per exact recorded assertion.
       </p>
       <div className="mt-1.5 max-h-[420px] overflow-x-auto overflow-y-auto rounded-md border border-border">
         <table className="w-full text-[11.5px]">
@@ -793,7 +805,8 @@ function ExplorationKeyboardNavigation({
                     variant="outline"
                     size="sm"
                     aria-label={`Inspect fact: ${node.label}`}
-                    onClick={() => onSelectionChange?.({ kind: "node", ref: node.ref })}
+                    onClick={() =>
+                      onSelectionChange?.({ kind: "node", ref: node.ref })}
                   >
                     Inspect
                   </Button>

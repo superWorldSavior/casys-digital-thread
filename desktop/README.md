@@ -30,8 +30,16 @@ packager.
 - Chat starts only after the validated product bootstrap is live and the manifest
   declares exact active sidecar `chat-host@0.6.0`. Production then resolves only the
   target-owned `casys-chat-host` package layout. A recovery-required bootstrap, wrong
-  pin, unsupported target, missing digest, or lookalike executable produces no Chat Host
-  child.
+  required pin, unsupported target, missing required artifact, or lookalike executable
+  produces no Chat Host child. A missing optional Codex adapter or executable disables
+  Codex in the selector without blocking the Muse default; present Codex bytes still
+  have to match their pins.
+- Muse is the default ACP agent. The Chat Host resolves `~/.local/bin/muse` or an
+  explicit `MUSE_CODE_EXECUTABLE`, reads its version, and forwards that exact path to
+  the bundled Muse adapter. Agent profiles keep their native sessions and context
+  markers separate. An attached standalone turn captures its exact MCP call and result
+  through a private scope on the shared relay, regardless of the agent's optional ACP
+  `rawOutput`. The renderer receives only the bounded saved-result DTO.
 - The helper's read-only `inspect` mode supplies the exact embedded-asset digest,
   configuration state, lock, and marker. Desktop then either reconnects to an exact
   identity or starts one helper and waits for its bounded readiness handshake.
@@ -54,9 +62,11 @@ packager.
   records remain `candidate-unverified`; they are not promoted to verified Thread
   evidence.
 - The renderer receives only closed lifecycle and `casys-desktop-chat/1.0` DTOs through
-  narrow native bindings. It never receives a token, pid, launch id, digest, helper
-  origin/path, storage path, process handle, ACP handle, MCP/provider credential, raw
-  provider payload, or arbitrary HTML.
+  narrow native bindings. It never receives a token, pid, launch id, runtime-image
+  digest, helper origin/path, storage path, process handle, ACP handle, MCP/provider
+  credential, raw provider payload, or arbitrary HTML. Saved-work inspection can expose
+  the recorded result and artifact digests for provenance; these do not grant provider
+  or lifecycle authority.
 - When the Workbench helper is ready, the WebView root is the embedded Workbench. The
   Desktop host proxies only an exact path allowlist through `GET` and `HEAD`; SSE stays
   GET-only. It injects a host-only session capability and forwards only bounded `Accept`
@@ -170,7 +180,9 @@ Packaging rejects a bundled general Deno or Node CLI, signs the helpers, runtime
 launchers, and outer app, then verifies every signature. The closed Chat Host launcher
 accepts only one exact `--data-root` argument and executes a fixed private official Node
 `26.5.0` plus fixed `main.mjs`; package and runtime gates verify Node, acpx/runtime,
-lifeline, adapter, and Codex executable digests. It also fixes and verifies
+lifeline, Muse adapter, and the optional Codex adapter and executable when present
+against their digests. The current build still bundles Codex; a missing optional runtime
+artifact disables that profile at launch. Packaging also fixes and verifies
 `LSMinimumSystemVersion` at macOS 14.0, matching the launchers and Deno Desktop runtime
 deployment target. `dist/` is ignored. The focused tasks rebuild their artifacts from
 exact pins rather than relying on ambient Node/acpx or a checkout runtime.

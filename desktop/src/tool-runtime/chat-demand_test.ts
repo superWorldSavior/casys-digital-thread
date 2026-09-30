@@ -267,6 +267,17 @@ Deno.test("startup sync reattaches persisted connections and sets demand", async
               tools: [],
             },
           },
+          {
+            id: "closed",
+            kind: "standalone" as const,
+            status: "closed" as const,
+            mcp: {
+              id: "build123d",
+              displayName: "B",
+              status: "connected" as const,
+              tools: [],
+            },
+          },
           { id: "c3", kind: "standalone" as const },
         ] as unknown as ChatSnapshotDto["conversations"],
         connectableMcps: [],
@@ -284,6 +295,44 @@ Deno.test("startup sync reattaches persisted connections and sets demand", async
   assertEquals(ensured, ["build123d"]);
   assertEquals(pushed, ["build123d"]);
   assertEquals(synced, [["build123d", ["chat:c1"]]]);
+});
+
+Deno.test("startup sync leaves a closed attached chat without provider demand", async () => {
+  const calls: string[] = [];
+  const lifecycle: DemandLifecycle = {
+    ensure: () => {
+      calls.push("ensure");
+      return Promise.resolve(READY);
+    },
+    acquire: () => undefined,
+    release: () => undefined,
+    syncDemand: (_toolId, holders) => void calls.push(`holders:${holders.join(",")}`),
+    resolveEndpoint: () => ENDPOINT,
+  };
+  const host: DemandChatHost = {
+    snapshot: () =>
+      Promise.resolve({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        host: "ready",
+        conversations: [{
+          id: "closed",
+          kind: "standalone",
+          status: "closed",
+          mcp: { id: "build123d", displayName: "B", status: "connected", tools: [] },
+        }] as unknown as ChatSnapshotDto["conversations"],
+        connectableMcps: [],
+        agentProfiles: [],
+        defaultAgentProfileId: "casys-muse",
+      }),
+    command: () => Promise.reject(new Error("not implemented")),
+    mcpEnsure: () => {
+      calls.push("relay");
+      return Promise.resolve({ attached: true });
+    },
+    mcpRelease: () => Promise.resolve({ released: false }),
+  };
+  await synchronizeStartupDemand(host, lifecycle, ["build123d"]);
+  assertEquals(calls, ["holders:"]);
 });
 
 Deno.test("startup sync without a readable host sets empty demand", async () => {

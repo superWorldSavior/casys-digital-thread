@@ -8,7 +8,7 @@ import type {
   StoredConversation,
   StoredToolResult,
   StoredWorkArtifact,
-} from "./store.ts";
+} from "./store-types.ts";
 import {
   type ChatCanvasLayoutDto,
   type ChatMessageDto,
@@ -256,12 +256,31 @@ function readToolResults(value: unknown): readonly StoredToolResult[] {
   return Object.freeze(value.map((entry) => {
     const candidate = object(entry, "tool result");
     const toolCallId = requiredString(candidate.toolCallId, "tool result id");
+    const viewerId = candidate.viewerId === undefined
+      ? undefined
+      : requiredString(candidate.viewerId, "viewer id");
+    const originAgentProfileId = candidate.originAgentProfileId === undefined
+      ? undefined
+      : profileId(candidate.originAgentProfileId, "result agent profile id");
+    const originSessionKey = candidate.originSessionKey === undefined
+      ? undefined
+      : requiredString(candidate.originSessionKey, "result session key");
+    const originAgentSessionId = candidate.originAgentSessionId === undefined
+      ? undefined
+      : requiredString(candidate.originAgentSessionId, "result agent session id");
+    const originTurnId = candidate.originTurnId === undefined
+      ? undefined
+      : requiredString(candidate.originTurnId, "result turn id");
     const server = requiredString(candidate.server, "tool result server");
     const tool = requiredString(candidate.tool, "tool result tool");
     const messageId = requiredString(candidate.messageId, "tool result message");
     const appUri = requiredString(candidate.appUri, "tool result App URI");
     if (
-      toolCallId.length > 160 || server.length > 160 || tool.length > 128 ||
+      toolCallId.length > 160 || (viewerId !== undefined && viewerId.length > 160) ||
+      (originSessionKey !== undefined && originSessionKey.length > 500) ||
+      (originAgentSessionId !== undefined && originAgentSessionId.length > 200) ||
+      (originTurnId !== undefined && originTurnId.length > 160) ||
+      server.length > 160 || tool.length > 128 ||
       messageId.length > 160 || !appUri.startsWith("ui://") || appUri.length > 500
     ) {
       throw new TypeError("tool result is invalid");
@@ -280,6 +299,11 @@ function readToolResults(value: unknown): readonly StoredToolResult[] {
     }
     return Object.freeze({
       toolCallId,
+      ...(viewerId === undefined ? {} : { viewerId }),
+      ...(originAgentProfileId === undefined ? {} : { originAgentProfileId }),
+      ...(originSessionKey === undefined ? {} : { originSessionKey }),
+      ...(originAgentSessionId === undefined ? {} : { originAgentSessionId }),
+      ...(originTurnId === undefined ? {} : { originTurnId }),
       server,
       tool,
       messageId,

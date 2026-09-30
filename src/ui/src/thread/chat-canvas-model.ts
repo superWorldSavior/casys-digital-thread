@@ -27,17 +27,17 @@ export function resolveCanvasNodes(
   layout: ChatCanvasLayoutDto,
   viewers: readonly ChatToolViewerDto[],
 ): CanvasResolvedLayout {
-  const byToolCall = new Map(
-    viewers.map((viewer) => [viewer.toolCallId, viewer]),
+  const byViewer = new Map(
+    viewers.map((viewer) => [viewer.viewerId, viewer]),
   );
   const seen = new Set<string>();
   const placed: CanvasPlacedNode[] = [];
   for (const node of layout.nodes) {
     if (node.kind === "viewer") {
-      if (node.toolCallId === undefined) continue;
-      const viewer = byToolCall.get(node.toolCallId);
+      if (node.viewerId === undefined) continue;
+      const viewer = byViewer.get(node.viewerId);
       if (viewer === undefined) continue;
-      seen.add(node.toolCallId);
+      seen.add(node.viewerId);
       placed.push({ node, viewer });
     } else {
       placed.push({ node });
@@ -45,7 +45,7 @@ export function resolveCanvasNodes(
   }
   return {
     placed,
-    unplaced: viewers.filter((viewer) => !seen.has(viewer.toolCallId)),
+    unplaced: viewers.filter((viewer) => !seen.has(viewer.viewerId)),
     groups: layout.groups,
   };
 }
@@ -140,12 +140,12 @@ export function addCanvasGroup(
 
 export function placeViewerNode(
   layout: ChatCanvasLayoutDto,
-  node: { readonly id: string; readonly toolCallId: string },
+  node: { readonly id: string; readonly viewerId: string },
 ): ChatCanvasLayoutDto {
   if (layout.nodes.some((entry) => entry.id === node.id)) return layout;
   if (
     layout.nodes.some((entry) =>
-      entry.kind === "viewer" && entry.toolCallId === node.toolCallId
+      entry.kind === "viewer" && entry.viewerId === node.viewerId
     )
   ) {
     return layout;

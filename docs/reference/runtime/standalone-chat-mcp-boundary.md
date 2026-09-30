@@ -1,7 +1,7 @@
-# Standalone chat and MCP connection boundary (Desktop host, iteration 1)
+# Standalone chat and MCP connection boundary (Desktop host)
 
-> Verified-Against: 7b870ee0 + uncommitted #49 pre-submit fix (2026-09-28). What
-> standalone chat supports, and the exact supported MCP connection boundary.
+> Verified-Against: 0be84e7e + uncommitted #58/#59 implementation (2026-09-30).
+> Source behavior below; the current packaged Muse journey in #53 remains unproved.
 
 Audience: both · Diátaxis: reference · Kind: contract note
 
@@ -14,10 +14,10 @@ list; viewers (#50) own MCP App rendering; #51 owns durable artifact reopening.
   prompt, every user message prefixed with the bound id. Existing stored conversations
   (with `projectId`, no kind) restore as project conversations, including their ACP
   session store.
-- `standalone`: no project, brief, SysML, Thread baseline, or Canvas. Zero engineering
-  MCPs until one is explicitly enabled. No Casys admitted-language subset is imposed on
-  ordinary calls: the provider's own tool contracts determine supported inputs and
-  results.
+- `standalone`: no project, brief, SysML, or Thread baseline. Its Session Canvas is a
+  presentation layout, not an engineering model. Zero engineering MCPs until one is
+  explicitly enabled. No Casys admitted-language subset is imposed on ordinary calls:
+  the provider's own tool contracts determine supported inputs and results.
 
 ## Supported MCP connection boundary (#49)
 
@@ -28,10 +28,11 @@ list; viewers (#50) own MCP App rendering; #51 owns durable artifact reopening.
   `build123d_execute`, `build123d_export`, `build123d_observe_assembly_integrity`,
   `build123d_project_2d`).
 - MCP servers are fixed when an ACP runtime is created (pinned `acpx@3c927fc` offers no
-  per-session override), so each MCP set owns its runtime and session store: `project`,
-  `standalone`, `standalone+mcp:<id>`. Enabling, retrying, or disabling an MCP restarts
-  the ACP session on the matching runtime; the transcript is preserved because it is
-  coordinator-owned.
+  per-session override). The host separates project, zero-MCP standalone, and attached
+  standalone runtimes by MCP set and agent profile. An attached standalone turn receives
+  a fresh relay scope and native ACP session/load token; the underlying provider relay
+  is shared. Enabling, retrying, or disabling an MCP changes the agent session while the
+  coordinator preserves the transcript and its per-profile context-delivery markers.
 - Agent-facing servers go through the host-owned loopback relay
   (`desktop/src/chat-host/mcp-relay.ts`): Casys providers fail closed without the
   `mcp-protocol-version` header and the full `io.modelcontextprotocol/*` `_meta`, which
@@ -44,6 +45,13 @@ list; viewers (#50) own MCP App rendering; #51 owns durable artifact reopening.
   POST /mcp only to the fixed registry upstream, carries no credentials, and its URL
   never reaches the renderer. The host probe still targets the provider directly with
   the conformant client.
+- For attached standalone turns, a random scope path on that relay belongs to one ACP
+  session and one turn. The host observes the exact `tools/call` request and provider
+  response on that path before forwarding the response. Calls outside an active scope
+  are refused. Native ACP tool cards remain text in the transcript; their optional
+  `rawOutput` is not the authority for the captured viewer result. A bounded, failed
+  archive read stays marked `missing`; it never fabricates an export or reruns a tool.
+  The development correlation tap is optional and is not required in production.
 - The host probes the endpoint directly (health, discovery, tool listing, expected-tools
   check) before attaching. A connection failure is reported as `MCP connection failed`
   with the agent kept on the zero-MCP runtime; it is never reported as a tool execution
@@ -68,6 +76,23 @@ list; viewers (#50) own MCP App rendering; #51 owns durable artifact reopening.
   identity and state only (`id`, `displayName`, `status`, tool names). Project
   conversations refuse `mcp.enable`/`mcp.disable`: standalone access cannot change the
   fixed project MCP, and no standalone flow manufactures engineering approval.
+
+## Agent profiles and saved results (#58/#59)
+
+Muse is the default profile. The packaged host resolves its executable from the explicit
+`MUSE_CODE_EXECUTABLE` or `~/.local/bin/muse`, reads its reported version, then sets the exact
+path for the bundled Muse ACP adapter. Codex is a selectable legacy profile; a missing
+optional Codex adapter or executable disables that profile without preventing Muse from
+starting. Custom ACP profiles come from the strict user-owned `agent-profiles.json`, not
+from a model response or viewer. An agent switch retains the conversation and result
+history while keeping native sessions and context markers separate by profile. A profile
+file reload invalidates changed adapters after active turns have settled.
+
+Each retained provider result has a `viewerId` tied to its captured message and original
+agent, session and turn. A reused native tool-call id cannot replace another result.
+While connected, the owning MCP can open the live App viewer. Source and retained export
+bytes remain available through **Saved work** after disconnect or restart; a missing
+archive falls back only to a live read whose bytes match the saved version digest.
 
 ## Permissions
 

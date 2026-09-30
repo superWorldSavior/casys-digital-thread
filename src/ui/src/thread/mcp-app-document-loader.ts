@@ -3,7 +3,8 @@ import {
   type ThreadViewerSession,
 } from "../../../presentation/workbench/thread/viewer-sessions.ts";
 
-export const MCP_APP_SCRIPT_NONCE_META_NAME = "casys-mcp-app-script-nonce" as const;
+export const MCP_APP_SCRIPT_NONCE_META_NAME =
+  "casys-mcp-app-script-nonce" as const;
 export const MCP_APP_DOCUMENT_MIME_TYPE = "text/html;profile=mcp-app" as const;
 
 /**

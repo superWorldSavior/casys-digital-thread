@@ -171,6 +171,7 @@ export async function synchronizeStartupDemand(
       for (const conversation of snapshot.conversations) {
         const attached = conversation.mcp;
         if (
+          conversation.status !== "closed" &&
           attached?.status === "connected" && managed.has(attached.id)
         ) {
           const list = holders.get(attached.id) ?? [];

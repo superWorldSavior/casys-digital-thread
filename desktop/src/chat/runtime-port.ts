@@ -144,6 +144,12 @@ export interface RuntimeInteractionSink {
 
 export interface ChatRuntimeAdapter {
   readonly runtime: ChatRuntimePort;
+  /**
+   * Captured MCP sessions use a fresh, revocable transport scope per turn.
+   * Close their live handle after each turn, preserving the native session
+   * record so the next ensure resumes history with a new scope.
+   */
+  readonly refreshSessionPerTurn?: boolean;
   setInteractionSink(sink: RuntimeInteractionSink): void;
   close(): Promise<void>;
 }

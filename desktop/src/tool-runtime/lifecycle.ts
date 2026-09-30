@@ -124,6 +124,7 @@ export class ToolRuntimeLifecycle {
   readonly #live = new Set<string>();
   readonly #bindings = new Map<string, ToolRuntimeBinding>();
   readonly #timers = new Map<string, LifecycleTimer>();
+  readonly #idleEpochs = new Map<string, number>();
 
   constructor(options: ToolRuntimeLifecycleOptions) {
     this.#backend = options.backend;
@@ -521,7 +522,7 @@ export class ToolRuntimeLifecycle {
     const outcome = await this.#backend.prepare(toolId, { hostPort: port });
     if (outcome.status !== "ready") return this.#passthroughOutcome(outcome);
     const binding = await this.#persistBinding(toolId, port);
-    this.#live.add(toolId);
+    this.#markReady(toolId);
     return { status: "ready", binding };
   }
 
@@ -535,7 +536,7 @@ export class ToolRuntimeLifecycle {
     const outcome = await this.#backend.prepare(toolId, { hostPort: port });
     if (outcome.status === "ready") {
       const binding = await this.#persistBinding(toolId, port);
-      this.#live.add(toolId);
+      this.#markReady(toolId);
       return { status: "ready", binding };
     }
     if (outcome.code === "port-conflict") {
@@ -560,7 +561,7 @@ export class ToolRuntimeLifecycle {
     const outcome = await this.#backend.prepare(toolId, { hostPort: port });
     if (outcome.status === "ready") {
       const binding = await this.#persistBinding(toolId, port);
-      this.#live.add(toolId);
+      this.#markReady(toolId);
       return { status: "ready", binding };
     }
     if (outcome.code !== "port-conflict") return this.#passthroughOutcome(outcome);
@@ -570,8 +571,16 @@ export class ToolRuntimeLifecycle {
     const retry = await this.#backend.prepare(toolId, { hostPort: retryPort });
     if (retry.status !== "ready") return this.#passthroughOutcome(retry);
     const binding = await this.#persistBinding(toolId, retryPort);
-    this.#live.add(toolId);
+    this.#markReady(toolId);
     return { status: "ready", binding };
+  }
+
+  #markReady(toolId: string): void {
+    this.#live.add(toolId);
+    // Preparation without an attachment is idle from this successful ensure.
+    // Re-arm here even if startup had already scheduled (or spent) a timer.
+    if ((this.#demand.get(toolId)?.size ?? 0) === 0) this.#arm(toolId);
+    else this.#disarm(toolId);
   }
 
   #fleetDefaultPort(toolId: string): number {
@@ -598,20 +607,24 @@ export class ToolRuntimeLifecycle {
 
   #arm(toolId: string): void {
     this.#disarm(toolId);
+    const epoch = this.#idleEpochs.get(toolId) ?? 0;
     this.#timers.set(
       toolId,
-      this.#schedule(() => void this.#onIdleExpired(toolId), this.#idleDelayMs),
+      this.#schedule(() => void this.#onIdleExpired(toolId, epoch), this.#idleDelayMs),
     );
   }
 
   #disarm(toolId: string): void {
     this.#timers.get(toolId)?.cancel();
     this.#timers.delete(toolId);
+    this.#idleEpochs.set(toolId, (this.#idleEpochs.get(toolId) ?? 0) + 1);
   }
 
-  async #onIdleExpired(toolId: string): Promise<void> {
+  async #onIdleExpired(toolId: string, epoch: number): Promise<void> {
+    if (this.#idleEpochs.get(toolId) !== epoch) return;
     this.#timers.delete(toolId);
     await this.#exclusive(toolId, async () => {
+      if (this.#idleEpochs.get(toolId) !== epoch) return;
       if ((this.#demand.get(toolId)?.size ?? 0) > 0) return;
       if (!this.#live.has(toolId)) return;
       const stopped = await this.#backend.stop(toolId);

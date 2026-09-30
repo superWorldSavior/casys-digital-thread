@@ -34,7 +34,8 @@ import type {
  */
 export const MCP_APP_LIVE_HOST_PROTOCOL_VERSION = "2026-01-26" as const;
 export const MCP_APP_LIVE_HOST_VERSION = "1.0.0" as const;
-export const MCP_APP_LIVE_HOST_NAME = "casys-desktop-chat-live-app-host" as const;
+export const MCP_APP_LIVE_HOST_NAME =
+  "casys-desktop-chat-live-app-host" as const;
 
 export interface McpAppLiveHostSession {
   /** Owning standalone conversation; the host never serves another. */
@@ -71,7 +72,11 @@ export interface McpAppLiveHostDelegates {
 
 export type McpAppLiveHostReadiness =
   | { readonly kind: "tool-result-delivered" }
-  | { readonly kind: "frame-size"; readonly width: number; readonly height: number }
+  | {
+    readonly kind: "frame-size";
+    readonly width: number;
+    readonly height: number;
+  }
   | {
     readonly kind: "resource-read";
     readonly status: "available" | "unavailable";
@@ -105,7 +110,8 @@ export interface McpAppLiveHostOptions {
   readonly onReadiness?: (event: McpAppLiveHostReadiness) => void;
 }
 
-const BUILD123D_EXPORT_ARTIFACT_SCHEMA = "build123d-export-artifact/1.0" as const;
+const BUILD123D_EXPORT_ARTIFACT_SCHEMA =
+  "build123d-export-artifact/1.0" as const;
 const ARTIFACT_SHA256 = /^[a-f0-9]{64}$/;
 const ARTIFACT_URI_MAX = 500;
 const ARTIFACT_MIME_MAX = 200;

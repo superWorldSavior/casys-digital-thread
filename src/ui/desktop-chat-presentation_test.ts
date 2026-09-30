@@ -175,7 +175,10 @@ Deno.test("Project Chat uses fixed panel, left sheet, compact modal, and fallbac
   assertStringIncludes(chat, "<ArkDialog.Backdrop");
   assertStringIncludes(chat, "<ArkDialog.Positioner");
   assertStringIncludes(chat, "<ArkDialog.CloseTrigger asChild>");
-  assertStringIncludes(chat, 'aria-label="Close project chat"');
+  assertMatch(
+    chat,
+    /aria-label=\{fixedPanelAvailable\s*\?\s*"Close project chat"\s*:\s*"Close chat"\}/,
+  );
   assertStringIncludes(chat, "aria-pressed={!selectedId}");
   assertStringIncludes(chat, "aria-pressed={conversation.id === selectedId}");
 });

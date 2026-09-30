@@ -1,8 +1,7 @@
 # Chat file access: menus, permissions, provenance (Desktop host, iteration 1)
 
-> Verified-Against: 62732d80 + uncommitted #52 (2026-09-27). What the
-> standalone chat shows for servers and files, what it is allowed to touch,
-> and what proves a file came from a tool run.
+> Verified-Against: 0be84e7e + uncommitted #58/#59 implementation
+> (2026-09-30). Source behavior; current packaged Muse journey still awaits #53.
 
 Audience: both · Diátaxis: reference · Kind: contract note
 
@@ -34,7 +33,7 @@ Buttons, each disabled while a turn or another command runs:
 
 ### Viewer Exports menu (`chat-viewer-panel.tsx` ViewerExports)
 
-Rendered under every live MCP App viewer:
+Rendered under a live MCP App viewer while its owning MCP is connected:
 
 - `Export source` writes the exact tool input: `<tool>-v<rev>.py` when the
   input carries a `script` string, else `<tool>-v<rev>-input.json`. Entries
@@ -50,9 +49,11 @@ Rendered under every live MCP App viewer:
 ### Saved work list (`chat-session-work.tsx`)
 
 Read-only. One row per result version with its revision, outcome, and
-retained exports. Legacy entries show `Captured before saving existed. Re-run
-the tool to save this result.` Missing bytes show a regeneration hint naming
-the version and file; trimming messages never deletes saved bytes.
+retained exports. Its source and saved file export actions remain available after MCP
+detach or chat restart; the live App viewer still needs the owning MCP connection.
+Legacy entries show `Captured before saving existed. Re-run the tool to save this
+result.` Missing bytes show a regeneration hint naming the version and file; trimming
+messages never deletes saved bytes.
 
 ## Permissions (#52-8)
 
@@ -98,9 +99,11 @@ into Thread/CAS state.
 
 ## Provenance (#52-8)
 
-Every captured result carries a 1-based `revision` (a new tool call id takes
-`max + 1`; a same-id redelivery replaces the entry but keeps its revision)
-and a `resultDigest` (`sha256:<hex>` over the canonical exact result JSON).
+Every captured result carries a durable `viewerId`, a 1-based `revision`, origin agent,
+session and turn, and a `resultDigest` (`sha256:<hex>` over the canonical exact result
+JSON). An exact redelivery is idempotent only for the same call and exact origin, input,
+outcome and result; a native tool-call id reused by another session creates a new version.
+The `viewerId` selects the saved result independently of the native call id.
 Each archived artifact records `uri`, `fileName`, `mimeType`, `bytes`,
 `sha256`, `state` (`saved` | `missing`), plus `savedAt` or `reason`.
 Retained bytes are keyed by digest and served back with `source: "saved"`; a
@@ -111,6 +114,12 @@ restart deliberately orphans previously issued URIs, and the chat archive is
 the durable copy (#51 E2E). Chat transcripts are history, not evidence: the
 UI states that transcript history is separate from authoritative Thread/CAS
 evidence.
+
+The production host observes exact `tools/call` request/response pairs in the active
+standalone turn's private relay scope. This capture does not depend on an ACP agent
+exposing structured `rawOutput`; native ACP tool cards remain transcript text. An
+unretained artifact stays `missing`. When saved bytes are gone, a live provider read is
+accepted for that version only if its size and digest still match the recorded manifest.
 
 ## Out-of-subset execution (#52-4)
 

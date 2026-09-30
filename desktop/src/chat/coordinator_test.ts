@@ -89,6 +89,30 @@ Deno.test("ChatCoordinator binds one project, streams sanitized events, and pres
   await coordinator.stop();
 });
 
+Deno.test("turn-scoped runtime closes its handle and re-ensures for the next turn", async () => {
+  const adapter = new FakeRuntimeAdapter("turn-scoped", true);
+  const coordinator = await coordinatorWith(adapter);
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("turn-one", conversationId, "First"));
+  await until(() => adapter.turns.length === 1);
+  adapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle" &&
+    adapter.closedHandles.length === 1
+  );
+  await coordinator.command(send("turn-two", conversationId, "Second"));
+  await until(() => adapter.turns.length === 2);
+  adapter.turns[1].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle" &&
+    adapter.closedHandles.length === 2
+  );
+  assertEquals(adapter.ensureInputs.length, 2);
+  assertEquals(adapter.ensureInputs[0].sessionKey, adapter.ensureInputs[1].sessionKey);
+  assertEquals(adapter.turns.length, 2);
+  await coordinator.stop();
+});
+
 Deno.test("bex pseudo-tool housekeeping never lands in the transcript", async () => {
   const adapter = new FakeRuntimeAdapter();
   const coordinator = await coordinatorWith(adapter);
@@ -1502,6 +1526,43 @@ Deno.test("agent.reload-profiles surfaces host errors", async () => {
   await coordinator.stop();
 });
 
+Deno.test("reload replaces an idle changed-profile runtime and session", async () => {
+  const agents = new FakeAgentProfileHost({ defaultId: MUSE_AGENT_PROFILE_ID });
+  const pool = standalonePool({ agents });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("before-reload", conversationId, "Before"));
+  const key = `${chatRuntimeKey("standalone")}@${MUSE_AGENT_PROFILE_ID}`;
+  const oldRuntime = agents.created.get(key);
+  assert(oldRuntime !== undefined);
+  await until(() => oldRuntime.turns.length === 1);
+  oldRuntime.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const oldSessionKey = oldRuntime.ensureInputs[0].sessionKey;
+  agents.created.delete(key); // The factory invalidates its own cache on reload.
+  agents.reloadOutcome = { ok: true, invalidatedRuntimeKeys: [key] };
+  const reloaded = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "reload-changed-profile",
+    command: "agent.reload-profiles",
+  });
+  assert(reloaded.ok);
+  assertEquals(oldRuntime.closedHandles.length, 1);
+  assertEquals(oldRuntime.closed, true);
+  await coordinator.command(send("after-reload", conversationId, "After"));
+  const newRuntime = agents.created.get(key);
+  assert(newRuntime !== undefined && newRuntime !== oldRuntime);
+  await until(() => newRuntime.turns.length === 1);
+  assert(newRuntime.ensureInputs[0].sessionKey !== oldSessionKey);
+  newRuntime.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  await coordinator.stop();
+});
+
 Deno.test("reload remaps conversations on removed profiles to legacy", async () => {
   const custom: AgentProfileDefinition = {
     id: "lab",
@@ -2275,11 +2336,15 @@ class FakeAgentProfileHost implements AgentProfileHost {
   readonly savedDefaults: string[] = [];
   nextDefinitions?: readonly AgentProfileDefinition[];
   reloadCalls = 0;
-  reloadOutcome: { readonly ok: true } | {
+  reloadOutcome: {
+    readonly ok: true;
+    readonly invalidatedRuntimeKeys: readonly string[];
+  } | {
     readonly ok: false;
     readonly error: string;
   } = {
     ok: true,
+    invalidatedRuntimeKeys: [],
   };
   ensureFailures = new Map<string, string>();
   #defaultId: string;
@@ -2328,7 +2393,8 @@ class FakeAgentProfileHost implements AgentProfileHost {
   }
 
   reload(): Promise<
-    { readonly ok: true } | { readonly ok: false; readonly error: string }
+    | { readonly ok: true; readonly invalidatedRuntimeKeys: readonly string[] }
+    | { readonly ok: false; readonly error: string }
   > {
     this.reloadCalls += 1;
     if (this.reloadOutcome.ok && this.nextDefinitions !== undefined) {
@@ -2498,6 +2564,7 @@ class FakeTurn implements RuntimeTurn {
 }
 
 class FakeRuntimeAdapter implements ChatRuntimeAdapter {
+  readonly refreshSessionPerTurn?: boolean;
   readonly turns: FakeTurn[] = [];
   readonly ensureInputs: Parameters<ChatRuntimePort["ensureSession"]>[0][] = [];
   readonly closedHandles: string[] = [];
@@ -2507,7 +2574,8 @@ class FakeRuntimeAdapter implements ChatRuntimeAdapter {
   maxConcurrent = 0;
   closed = false;
 
-  constructor(tag = "1") {
+  constructor(tag = "1", refreshSessionPerTurn = false) {
+    this.refreshSessionPerTurn = refreshSessionPerTurn;
     this.runtime = {
       ensureSession: (input) => {
         this.ensureInputs.push(input);
@@ -2862,6 +2930,11 @@ Deno.test("canvas layout round-trips and reconciles against retained results", a
     got.layout?.nodes.map((node) => node.id),
     ["node-kept", "node-note"],
   );
+  assertEquals(
+    got.layout?.nodes[0]?.viewerId,
+    coordinator.snapshot(conversationId).conversations[0].viewers[0]?.viewerId,
+  );
+  assertEquals(got.layout?.nodes[0]?.toolCallId, undefined);
   assertEquals(got.layout?.groups.length, 1);
   await coordinator.stop();
 });
@@ -3354,7 +3427,7 @@ Deno.test("viewer.open advertises only renderer-shaped server tools within the c
   await coordinator.stop();
 });
 
-Deno.test("viewer listing hides entries from a detached server", async () => {
+Deno.test("saved work stays listed while its live viewer is detached", async () => {
   const backend = new FakeViewerBackend();
   const pool = standalonePool({ probeTools: ["t_one"], viewerBackend: backend });
   const coordinator = await pool.coordinator();
@@ -3375,9 +3448,17 @@ Deno.test("viewer listing hides entries from a detached server", async () => {
   });
   assert(disabled.ok);
   assertEquals(
-    coordinator.snapshot(conversationId).conversations[0].viewers,
-    [],
+    coordinator.snapshot(conversationId).conversations[0].viewers.length,
+    1,
   );
+  const offlineApp = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "offline-app",
+    command: "viewer.open",
+    conversationId,
+    toolCallId: "tool-call-1",
+  });
+  assertEquals(offlineApp.ok, false);
   await enableTestMcp(coordinator, conversationId);
   assertEquals(
     coordinator.snapshot(conversationId).conversations[0].viewers.length,
@@ -3617,7 +3698,7 @@ Deno.test("capture records missing artifacts with explicit reasons", async () =>
   await coordinator.stop();
 });
 
-Deno.test("same-id redelivery replaces the entry but keeps its revision", async () => {
+Deno.test("exact same-id redelivery is idempotent", async () => {
   const backend = new FakeViewerBackend();
   const pool = standalonePool({ probeTools: ["t_one"], viewerBackend: backend });
   const coordinator = await pool.coordinator();
@@ -3630,7 +3711,210 @@ Deno.test("same-id redelivery replaces the entry but keeps its revision", async 
   const viewers = coordinator.snapshot(conversationId).conversations[0].viewers;
   assertEquals(viewers.length, 1);
   assertEquals(viewers[0]?.archive?.revision, 1);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].messages.filter((message) =>
+      message.kind === "tool"
+    ).length,
+    1,
+  );
   await coordinator.stop();
+});
+
+Deno.test("changed result under one native id becomes a new version", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await captureViewerResult(pool, coordinator, conversationId, [
+    { toolCallId: "same-native-id", tool: "t_one", result: viewerToolResult(11) },
+    { toolCallId: "same-native-id", tool: "t_one", result: viewerToolResult(22) },
+  ]);
+  const viewers = coordinator.snapshot(conversationId).conversations[0].viewers;
+  assertEquals(viewers.map((viewer) => viewer.archive?.revision), [1, 2]);
+  assert(viewers[0].viewerId !== viewers[1].viewerId);
+  await coordinator.stop();
+});
+
+Deno.test("same native id and bytes on a later turn is a new call", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await captureViewerResult(pool, coordinator, conversationId, [
+    { toolCallId: "reused-id", tool: "t_one", result: viewerToolResult(11) },
+  ]);
+  await coordinator.command(send("next-turn-same-id", conversationId, "Repeat"));
+  await until(() => pool.mcp.turns.length === 2);
+  pool.mcp.turns[1].events.push({
+    type: "tool_call",
+    text: "t_one (completed)",
+    toolCallId: "reused-id",
+    status: "completed",
+    rawInput: { server: "build123d", tool: "t_one", arguments: {} },
+    rawOutput: { result: viewerToolResult(11) },
+  });
+  pool.mcp.turns[1].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].viewers.map((viewer) =>
+      viewer.archive?.revision
+    ),
+    [1, 2],
+  );
+  await coordinator.stop();
+});
+
+Deno.test("same native call id across agents keeps two exact saved versions", async () => {
+  const backend = new FakeViewerBackend();
+  const store = new MemoryChatConversationStore();
+  const pool = standalonePool({ probeTools: ["t_one"], viewerBackend: backend, store });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  const firstSha = await sha256OfText("one");
+  const secondSha = await sha256OfText("two");
+  const firstUri = `casys://build123d/artifacts/${firstSha}.step`;
+  const secondUri = `casys://build123d/artifacts/${secondSha}.step`;
+  backend.readResource = (_server, uri) =>
+    Promise.resolve({
+      contents: [{
+        uri,
+        mimeType: "model/step",
+        blob: btoa(uri === firstUri ? "one" : "two"),
+      }],
+    });
+  await captureViewerResult(pool, coordinator, conversationId, [{
+    toolCallId: "reused-native-id",
+    tool: "t_one",
+    result: viewerExportResult([{
+      uri: firstUri,
+      mimeType: "model/step",
+      bytes: 3,
+      sha256: firstSha,
+    }]),
+  }]);
+  const switched = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "agent-switch-between-results",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assert(switched.ok);
+  const muse = pool.agents.created.get(
+    `${chatRuntimeKey("standalone", "build123d")}@${MUSE_AGENT_PROFILE_ID}`,
+  );
+  assert(muse !== undefined);
+  await coordinator.command(send("muse-result", conversationId, "Second tool call"));
+  await until(() => muse.turns.length === 1);
+  muse.turns[0].events.push({
+    type: "tool_call",
+    text: "t_one (completed)",
+    toolCallId: "reused-native-id",
+    status: "completed",
+    rawInput: { server: "build123d", tool: "t_one", arguments: {} },
+    rawOutput: {
+      result: viewerExportResult([{
+        uri: secondUri,
+        mimeType: "model/step",
+        bytes: 3,
+        sha256: secondSha,
+      }]),
+    },
+  });
+  muse.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const viewers = coordinator.snapshot(conversationId).conversations[0].viewers;
+  assertEquals(viewers.map((viewer) => viewer.archive?.revision), [1, 2]);
+  assertEquals(viewers.map((viewer) => viewer.toolCallId), [
+    "reused-native-id",
+    "reused-native-id",
+  ]);
+  assert(viewers[0].viewerId !== viewers[1].viewerId);
+  const set = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "place-both-versions",
+    command: "canvas.set-layout",
+    conversationId,
+    layout: {
+      version: 1,
+      nodes: viewers.map((viewer, index) => ({
+        id: `node-${index}`,
+        kind: "viewer" as const,
+        viewerId: viewer.viewerId,
+        x: index * 100,
+        y: 0,
+        z: index,
+      })),
+      groups: [],
+    },
+  });
+  assert(set.ok);
+  const layout = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "read-both-nodes",
+    command: "canvas.get-layout",
+    conversationId,
+  });
+  assertEquals(
+    layout.layout?.nodes.map((node) => node.viewerId),
+    viewers.map((viewer) => viewer.viewerId),
+  );
+  const disabled = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "detach-after-both-results",
+    command: "mcp.disable",
+    conversationId,
+  });
+  assert(disabled.ok);
+  assertEquals(coordinator.snapshot(conversationId).conversations[0].viewers.length, 2);
+  for (const [index, uri] of [firstUri, secondUri].entries()) {
+    const capture = await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: `archive-${index}`,
+      command: "viewer.archive-read",
+      conversationId,
+      viewerId: viewers[index].viewerId,
+    });
+    assert(capture.ok);
+    assertEquals(capture.viewerCapture?.viewerId, viewers[index].viewerId);
+    const read = await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: `saved-${index}`,
+      command: "viewer.resource-read",
+      conversationId,
+      toolCallId: viewers[index].viewerId,
+      uri,
+    });
+    assert(read.ok);
+    assertEquals(read.viewerResource?.source, "saved");
+    assertEquals(read.viewerResource?.data, btoa(index === 0 ? "one" : "two"));
+  }
+  assertEquals(await store.loadArtifact(firstSha), new TextEncoder().encode("one"));
+  assertEquals(await store.loadArtifact(secondSha), new TextEncoder().encode("two"));
+  await coordinator.stop();
+  const revived = await standalonePool({ store, viewerBackend: backend }).coordinator();
+  assertEquals(
+    revived.snapshot(conversationId).conversations[0].viewers.map((viewer) =>
+      viewer.viewerId
+    ),
+    viewers.map((viewer) => viewer.viewerId),
+  );
+  const revivedLayout = await revived.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "read-both-nodes-after-restart",
+    command: "canvas.get-layout",
+    conversationId,
+  });
+  assertEquals(
+    revivedLayout.layout?.nodes.map((node) => node.viewerId),
+    viewers.map((viewer) => viewer.viewerId),
+  );
+  await revived.stop();
 });
 
 class GatedMemoryStore extends MemoryChatConversationStore {
@@ -3869,6 +4153,61 @@ Deno.test("reopened work serves saved bytes with zero solver calls", async () =>
   assertEquals(backend.resourceCalls.length, 0);
   assertEquals(backend.appCalls.length, 1);
   await coordinator.stop();
+  await revived.stop();
+});
+
+Deno.test("removed provider still allows exact archive and saved file read", async () => {
+  const backend = new FakeViewerBackend();
+  const store = new MemoryChatConversationStore();
+  const pool = standalonePool({ probeTools: ["t_one"], viewerBackend: backend, store });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  const sha256 = await sha256OfText("step");
+  const uri = `casys://build123d/artifacts/${sha256}.step`;
+  await captureViewerResult(pool, coordinator, conversationId, [{
+    toolCallId: "tool-call-removed-provider",
+    tool: "t_one",
+    result: viewerExportResult([{ uri, mimeType: "model/step", bytes: 4, sha256 }]),
+  }]);
+  await coordinator.stop();
+  const revived = await coordinatorWith(new FakeRuntimeAdapter(), {
+    store,
+    mcpServers: [],
+    viewerBackend: backend,
+  });
+  const viewer = revived.snapshot(conversationId).conversations[0].viewers[0];
+  assert(viewer !== undefined);
+  const beforeReads = backend.resourceCalls.length;
+  const archive = await revived.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "archive-without-provider",
+    command: "viewer.archive-read",
+    conversationId,
+    viewerId: viewer.viewerId,
+  });
+  assert(archive.ok);
+  assertEquals(archive.viewerCapture?.toolInput, {});
+  const file = await revived.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "file-without-provider",
+    command: "viewer.resource-read",
+    conversationId,
+    toolCallId: viewer.viewerId,
+    uri,
+  });
+  assert(file.ok);
+  assertEquals(file.viewerResource?.source, "saved");
+  assertEquals(file.viewerResource?.data, "c3RlcA==");
+  assertEquals(backend.resourceCalls.length, beforeReads);
+  const live = await revived.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "app-without-provider",
+    command: "viewer.open",
+    conversationId,
+    toolCallId: viewer.viewerId,
+  });
+  assertEquals(live.ok, false);
   await revived.stop();
 });
 

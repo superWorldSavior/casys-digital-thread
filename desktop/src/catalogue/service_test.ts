@@ -515,7 +515,7 @@ Deno.test("bundled curated manifest loads with the Build123d entry", () => {
     assertEquals(entry.tools.length, 4);
     assertEquals(entry.examples.length, 2);
     assert(entry.viewers.every((viewer) => viewer.uri.startsWith("ui://")));
-    assertEquals(entry.distribution.version, "0.7.0");
+    assertEquals(entry.distribution.version, "0.7.1");
     parseCatalogueSnapshotDto(JSON.parse(JSON.stringify(snapshot)));
   });
 });

@@ -2,7 +2,7 @@ import { assert, assertEquals } from "jsr:@std/assert@1.0.14";
 import { createServer, type Server } from "node:http";
 import { CHAT_HOST_COMPONENT_VERSION } from "../../../src/presentation/desktop/chat/contracts.ts";
 import { canonicalJson, createMcpCallTap } from "../chat/mcp-tap.ts";
-import { startMcpRelay } from "./mcp-relay.ts";
+import { type McpObservedCall, startMcpRelay } from "./mcp-relay.ts";
 
 interface CapturedUpstream {
   method?: string;
@@ -11,14 +11,16 @@ interface CapturedUpstream {
 }
 
 async function withUpstream(
-  handler: (captured: CapturedUpstream) => { status: number; body: unknown },
+  handler: (captured: CapturedUpstream) =>
+    | { status: number; body: unknown }
+    | Promise<{ status: number; body: unknown }>,
   run: (url: string, captured: CapturedUpstream) => Promise<void>,
 ): Promise<void> {
   const captured: CapturedUpstream = { headers: {}, body: undefined };
   const server: Server = createServer((request, response) => {
     const chunks: Uint8Array[] = [];
     request.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-    request.on("end", () => {
+    request.on("end", async () => {
       captured.method = request.method;
       captured.headers = {};
       for (const [key, value] of Object.entries(request.headers)) {
@@ -26,7 +28,7 @@ async function withUpstream(
       }
       const raw = Buffer.concat(chunks).toString("utf8");
       captured.body = raw === "" ? undefined : JSON.parse(raw);
-      const { status, body } = handler(captured);
+      const { status, body } = await handler(captured);
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(body));
     });
@@ -89,6 +91,263 @@ Deno.test("relay injects the Casys convention and pipes the JSON response", asyn
       }
     },
   );
+});
+
+async function scopedCall(url: string, id: number, tool = "build123d_execute") {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: tool, arguments: { source: "same source" } },
+    }),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+Deno.test("scoped calls isolate concurrent sessions and identical calls on one listener", async () => {
+  let sequence = 0;
+  await withUpstream((captured) => ({
+    status: 200,
+    body: {
+      jsonrpc: "2.0",
+      id: (captured.body as { id: number }).id,
+      result: { volume: ++sequence },
+    },
+  }), async (upstreamUrl) => {
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl });
+    try {
+      const first = relay.createScope!();
+      const second = relay.createScope!();
+      assertEquals(new URL(first.url).port, new URL(second.url).port);
+      assert(first.url !== second.url);
+      const firstCalls: McpObservedCall[] = [], secondCalls: McpObservedCall[] = [];
+      first.beginTurn((call) => firstCalls.push(call));
+      second.beginTurn((call) => secondCalls.push(call));
+      const [a, b] = await Promise.all([
+        scopedCall(first.url, 1),
+        scopedCall(second.url, 1),
+      ]);
+      assertEquals(firstCalls.map((call) => call.result), [a.body.result]);
+      assertEquals(secondCalls.map((call) => call.result), [b.body.result]);
+      const repeated = await scopedCall(first.url, 2);
+      assertEquals(firstCalls[1].result, repeated.body.result);
+      assert(firstCalls[0].callId !== firstCalls[1].callId);
+      assertEquals(firstCalls[0].args, { source: "same source" });
+      first.close();
+      second.close();
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+Deno.test("large provider response streams intact without a second call or capture", async () => {
+  const providerBody = {
+    jsonrpc: "2.0",
+    id: 1,
+    result: { content: "x".repeat(8 * 1024 * 1024) },
+  };
+  const expected = JSON.stringify(providerBody);
+  let executions = 0;
+  await withUpstream(() => {
+    executions++;
+    return { status: 200, body: providerBody };
+  }, async (upstreamUrl) => {
+    const tap = createMcpCallTap();
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl, tap });
+    try {
+      const scope = relay.createScope!();
+      let observations = 0;
+      scope.beginTurn(() => observations++);
+      const response = await fetch(scope.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "build123d_execute", arguments: {} },
+        }),
+      });
+      assertEquals(response.status, 200);
+      assertEquals(await response.text(), expected);
+      assertEquals(executions, 1);
+      assertEquals(observations, 0);
+      assertEquals(
+        tap.takeMatch({ tool: "build123d_execute", argsJson: "{}", since: 0 }),
+        undefined,
+      );
+      scope.close();
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+Deno.test("scoped endpoint denies execution outside its one turn and cannot be reused", async () => {
+  await withUpstream((captured) => ({
+    status: 200,
+    body: { jsonrpc: "2.0", id: (captured.body as { id: number }).id, result: {} },
+  }), async (upstreamUrl, captured) => {
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl });
+    try {
+      const scope = relay.createScope!();
+      assertEquals((await scopedCall(scope.url, 1)).status, 403);
+      assertEquals(captured.method, undefined);
+      scope.beginTurn(() => {});
+      assertEquals((await scopedCall(scope.url, 2)).status, 200);
+      scope.close();
+      assertEquals((await scopedCall(scope.url, 3)).status, 404);
+      let refused = false;
+      try {
+        scope.beginTurn(() => {});
+      } catch {
+        refused = true;
+      }
+      assert(refused);
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+Deno.test("late response from a revoked turn cannot update a new scoped turn", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await withUpstream(async (captured) => {
+    const id = (captured.body as { id: number }).id;
+    if (id === 1) {
+      started.resolve();
+      await release.promise;
+    }
+    return { status: 200, body: { jsonrpc: "2.0", id, result: { volume: id } } };
+  }, async (upstreamUrl) => {
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl });
+    try {
+      const old = relay.createScope!();
+      const oldCalls: McpObservedCall[] = [];
+      old.beginTurn((call) => oldCalls.push(call));
+      const pending = scopedCall(old.url, 1);
+      await started.promise;
+      old.close();
+      const next = relay.createScope!();
+      const newCalls: McpObservedCall[] = [];
+      next.beginTurn((call) => newCalls.push(call));
+      await scopedCall(next.url, 2);
+      release.resolve();
+      assertEquals((await pending).status, 200);
+      assertEquals(oldCalls.length, 0);
+      assertEquals(newCalls.map((call) => call.result), [{ volume: 2 }]);
+      assertEquals((await scopedCall(old.url, 3)).status, 404);
+      next.close();
+    } finally {
+      release.resolve();
+      await relay.close();
+    }
+  });
+});
+
+Deno.test("retarget during an in-flight call invalidates only its observation", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await withUpstream(async (captured) => {
+    const id = (captured.body as { id: number }).id;
+    started.resolve();
+    await release.promise;
+    return { status: 200, body: { jsonrpc: "2.0", id, result: { endpoint: "old" } } };
+  }, async (oldUrl) => {
+    await withUpstream((captured) => ({
+      status: 200,
+      body: {
+        jsonrpc: "2.0",
+        id: (captured.body as { id: number }).id,
+        result: { endpoint: "new" },
+      },
+    }), async (newUrl) => {
+      const relay = await startMcpRelay({ upstreamMcpUrl: oldUrl });
+      try {
+        const scope = relay.createScope!();
+        const calls: McpObservedCall[] = [];
+        scope.beginTurn((call) => calls.push(call));
+        const pending = scopedCall(scope.url, 1);
+        await started.promise;
+        relay.setUpstream(newUrl);
+        release.resolve();
+        assertEquals((await pending).body.result, { endpoint: "old" });
+        assertEquals(calls.length, 0);
+        await scopedCall(scope.url, 2);
+        assertEquals(calls.map((call) => call.result), [{ endpoint: "new" }]);
+        scope.close();
+      } finally {
+        release.resolve();
+        await relay.close();
+      }
+    });
+  });
+});
+
+Deno.test("scoped capture refuses mismatched and malformed RPC results and retains real errors", async () => {
+  let nextBody: unknown;
+  await withUpstream(() => ({ status: 200, body: nextBody }), async (upstreamUrl) => {
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl });
+    try {
+      const scope = relay.createScope!();
+      const calls: McpObservedCall[] = [];
+      scope.beginTurn((call) => calls.push(call));
+      for (
+        const body of [
+          { jsonrpc: "2.0", id: 99, result: { bad: true } },
+          { id: 1, result: {} },
+          { jsonrpc: "2.0", id: 1, result: {}, error: {} },
+          [{ jsonrpc: "2.0", id: 1, result: {} }],
+          { jsonrpc: "2.0", id: 1, result: { text: "x".repeat(262_144) } },
+        ]
+      ) {
+        nextBody = body;
+        await scopedCall(scope.url, 1);
+        assertEquals(calls.length, 0);
+      }
+      nextBody = {
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32602, message: "bad args" },
+      };
+      await scopedCall(scope.url, 1);
+      assertEquals(calls[0].error, { code: -32602, message: "bad args" });
+      nextBody = { jsonrpc: "2.0", id: 2, result: { isError: true, content: [] } };
+      await scopedCall(scope.url, 2);
+      assertEquals(calls[1].error, { isError: true, content: [] });
+      scope.close();
+    } finally {
+      await relay.close();
+    }
+  });
+});
+
+Deno.test("an observation failure cannot fail or replay an acknowledged tool", async () => {
+  let executed = 0;
+  await withUpstream(() => ({
+    status: 200,
+    body: { jsonrpc: "2.0", id: 1, result: { executions: ++executed } },
+  }), async (upstreamUrl) => {
+    const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl });
+    try {
+      const scope = relay.createScope!();
+      scope.beginTurn(() => {
+        throw new Error("capture callback unavailable");
+      });
+      const result = await scopedCall(scope.url, 1);
+      assertEquals(result.status, 200);
+      assertEquals(result.body.result, { executions: 1 });
+      assertEquals(executed, 1);
+      scope.close();
+    } finally {
+      await relay.close();
+    }
+  });
 });
 
 Deno.test("relay preserves incoming meta fields while Casys keys win", async () => {

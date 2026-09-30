@@ -1,4 +1,5 @@
 import { assert, assertEquals, assertThrows } from "jsr:@std/assert@1.0.14";
+import { MCP_BUILD123D_071_IMAGE_REFERENCE } from "../../../src/adapters/control-plane/first-party-capability-runtime-launch-groups.ts";
 import { build123dHostPlan, verifyBuild123dSmoke } from "./plans.ts";
 
 Deno.test("fleet plan carries the exact pinned provider identity", () => {
@@ -6,9 +7,9 @@ Deno.test("fleet plan carries the exact pinned provider identity", () => {
   assertEquals(plan.toolId, "build123d");
   assertEquals(
     plan.imageRef,
-    "ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9",
+    MCP_BUILD123D_071_IMAGE_REFERENCE,
   );
-  assertEquals(plan.providerVersion, "0.7.0");
+  assertEquals(plan.providerVersion, "0.7.1");
   assertEquals(
     plan.platform,
     Deno.build.arch === "x86_64" ? "linux/amd64" : "linux/arm64",

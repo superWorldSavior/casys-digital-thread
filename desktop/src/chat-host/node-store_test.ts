@@ -59,7 +59,13 @@ Deno.test("Chat Host store round-trips standalone kind, MCP, and viewer archive"
       mcpTools: ["build123d_export"],
       toolResults: [
         {
+          viewerId: "message-1",
           toolCallId: "tool-call-1",
+          originAgentProfileId: "casys-muse",
+          originSessionKey:
+            "casys-desktop-exclusive/standalone/conversation:solo/agent/casys-muse",
+          originAgentSessionId: "agent-session-1",
+          originTurnId: "turn:1",
           server: "build123d",
           tool: "build123d_export",
           messageId: "message-1",
@@ -93,6 +99,10 @@ Deno.test("Chat Host store round-trips standalone kind, MCP, and viewer archive"
     assertEquals(loaded[0].mcpId, "build123d");
     assertEquals(loaded[0].mcpTools, ["build123d_export"]);
     assertEquals(loaded[0].toolResults?.length, 1);
+    assertEquals(loaded[0].toolResults?.[0].viewerId, "message-1");
+    assertEquals(loaded[0].toolResults?.[0].originAgentProfileId, "casys-muse");
+    assertEquals(loaded[0].toolResults?.[0].originAgentSessionId, "agent-session-1");
+    assertEquals(loaded[0].toolResults?.[0].originTurnId, "turn:1");
     assertEquals(loaded[0].toolResults?.[0].revision, 1);
     assertEquals(
       loaded[0].toolResults?.[0].artifacts?.[0].state,

@@ -263,9 +263,10 @@ export interface AgentProfileHost {
   ): Promise<import("./runtime-port.ts").ChatRuntimeAdapter>;
   /** Persists the default; must not touch any conversation. */
   saveDefault(profileId: string): Promise<void>;
-  /** Re-reads the user file; returns the new registry or the reason. */
+  /** Re-reads the user file and names cached runtimes whose profile changed. */
   reload(): Promise<
-    { readonly ok: true } | { readonly ok: false; readonly error: string }
+    | { readonly ok: true; readonly invalidatedRuntimeKeys: readonly string[] }
+    | { readonly ok: false; readonly error: string }
   >;
 }
 

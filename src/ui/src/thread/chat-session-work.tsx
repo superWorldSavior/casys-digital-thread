@@ -1,15 +1,32 @@
+import { useState } from "react";
 import type { JSX } from "react";
 import { Button } from "../ui/button.tsx";
 import type {
+  ChatCommandResponse,
   ChatConversationDto,
   ChatRetentionDto,
   ChatToolViewerDto,
+  DesktopChatBindingCommandRequest,
 } from "../../../presentation/desktop/chat/contracts.ts";
+import { DESKTOP_CHAT_PROTOCOL } from "../../../presentation/desktop/chat/contracts.ts";
+import type { ChatViewerDispatch } from "./chat-viewer-panel.tsx";
 
 export interface ChatSessionWorkListProps {
   readonly conversation: ChatConversationDto;
   readonly retention: ChatRetentionDto | undefined;
   readonly sendMessage: (text: string) => void;
+  readonly dispatch: ChatViewerDispatch | undefined;
+  readonly command: (
+    request: DesktopChatBindingCommandRequest,
+  ) => Promise<ChatCommandResponse | undefined>;
+}
+
+function base64FromBytes(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function formatBytes(bytes: number): string {
@@ -33,6 +50,8 @@ export function ChatSessionWorkList({
   conversation,
   retention,
   sendMessage,
+  dispatch,
+  command,
 }: ChatSessionWorkListProps): JSX.Element {
   const versions = [...conversation.viewers].reverse();
   return (
@@ -62,9 +81,12 @@ export function ChatSessionWorkList({
       <ol>
         {versions.map((viewer) => (
           <WorkVersionRow
-            key={viewer.toolCallId}
+            key={viewer.viewerId}
             viewer={viewer}
+            conversationId={conversation.id}
             sendMessage={sendMessage}
+            dispatch={dispatch}
+            command={command}
           />
         ))}
       </ol>
@@ -74,15 +96,80 @@ export function ChatSessionWorkList({
 
 function WorkVersionRow({
   viewer,
+  conversationId,
   sendMessage,
+  dispatch,
+  command,
 }: {
   readonly viewer: ChatToolViewerDto;
+  readonly conversationId: string;
   readonly sendMessage: (text: string) => void;
+  readonly dispatch: ChatViewerDispatch | undefined;
+  readonly command: ChatSessionWorkListProps["command"];
 }): JSX.Element {
   const archive = viewer.archive;
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | undefined>(undefined);
+  const run = async (task: () => Promise<string>): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      setNotice(await task());
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Export failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const exportSource = (): Promise<void> =>
+    run(async () => {
+      if (dispatch === undefined) {
+        throw new Error("File export is unavailable.");
+      }
+      const response = await command({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        requestId: `ui:${crypto.randomUUID()}`,
+        command: "viewer.archive-read",
+        conversationId,
+        viewerId: viewer.viewerId,
+      });
+      const capture = response?.viewerCapture;
+      if (!response?.ok || capture?.viewerId !== viewer.viewerId) {
+        throw new Error(response?.error ?? "Saved source is unavailable.");
+      }
+      const script = capture.toolInput.script;
+      const source = typeof script === "string"
+        ? script
+        : JSON.stringify(capture.toolInput, null, 2);
+      const tag = archive === undefined ? "source" : `v${archive.revision}`;
+      const fileName = typeof script === "string"
+        ? `${viewer.tool}-${tag}.py`
+        : `${viewer.tool}-${tag}-input.json`;
+      const saved = await dispatch.saveFile(
+        fileName,
+        base64FromBytes(new TextEncoder().encode(source)),
+      );
+      return `Saved ${saved.path} (${saved.bytes} bytes).`;
+    });
+  const exportArtifact = (uri: string, fileName: string): Promise<void> =>
+    run(async () => {
+      if (dispatch === undefined) {
+        throw new Error("File export is unavailable.");
+      }
+      const resource = await dispatch.readViewerResource(
+        conversationId,
+        viewer.viewerId,
+        uri,
+      );
+      const saved = await dispatch.saveFile(fileName, resource.data);
+      return `Saved ${saved.path} (${saved.bytes} bytes, ${resource.source} bytes).`;
+    });
   const label = archive === undefined
     ? `${viewer.tool} · unsaved`
-    : `v${archive.revision} · ${viewer.tool} · ${formatDate(archive.capturedAt)}`;
+    : `v${archive.revision} · ${viewer.tool} · ${
+      formatDate(archive.capturedAt)
+    }`;
   return (
     <li className="desktop-chat-work-version">
       <div className="desktop-chat-project-line">
@@ -94,22 +181,46 @@ function WorkVersionRow({
           Captured before saving existed. Re-run the tool to save this result.
         </p>
       )}
+      {archive !== undefined && dispatch !== undefined && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={() => void exportSource()}
+        >
+          Export source
+        </Button>
+      )}
       {archive !== undefined && archive.artifacts.length === 0 && (
         <p className="desktop-chat-viewer-status">
-          No export files in this result. The exact result data stays saved with the
-          conversation.
+          No export files in this result. The exact result data stays saved with
+          the conversation.
         </p>
       )}
       {archive !== undefined && archive.artifacts.length > 0 && (
         <ul>
           {archive.artifacts.map((artifact) => (
-            <li key={artifact.sha256}>
+            <li key={`${artifact.uri}:${artifact.sha256}`}>
               <span>
-                {artifact.fileName} · {formatBytes(artifact.bytes)} · {artifact.state}
+                {artifact.fileName} · {formatBytes(artifact.bytes)} ·{" "}
+                {artifact.state}
                 {artifact.state === "missing" && artifact.reason !== undefined
                   ? ` — ${artifact.reason}`
                   : ""}
               </span>
+              {dispatch !== undefined && artifact.state === "saved" && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() =>
+                    void exportArtifact(artifact.uri, artifact.fileName)}
+                >
+                  Export file
+                </Button>
+              )}
               {artifact.state === "missing" && (
                 <Button
                   type="button"
@@ -128,6 +239,9 @@ function WorkVersionRow({
             </li>
           ))}
         </ul>
+      )}
+      {notice !== undefined && (
+        <p className="desktop-chat-viewer-status" role="status">{notice}</p>
       )}
       {archive !== undefined && (
         <details>

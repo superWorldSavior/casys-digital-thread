@@ -15,6 +15,11 @@ adding a row in the matching group. The contributor entry
 command is `deno task verify`; see [CONTRIBUTING.md](../../../CONTRIBUTING.md) and the
 [documentation index](../../README.md).
 
+The separate `desktop/deno.json` `test` task runs Desktop component tests with
+loopback network access, then sidecar and Workbench tests under the repository
+import map. Packaged helper integration tests remain dedicated tasks with their
+own runtime permissions; the default Desktop test task does not start helpers.
+
 ## Contribute
 
 | Task                                            | Role                                                                                   |

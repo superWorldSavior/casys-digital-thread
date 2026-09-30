@@ -129,6 +129,8 @@ const UNWATCHED_CITING_DOCUMENTS = [
   "docs/reference/runtime/capability-packs/atomic-runtime-catalog.md",
   "docs/reference/runtime/capability-packs/qualified-binding-catalog.md",
   "docs/reference/runtime/local-runtime-and-ports.md",
+  // `casys.*` names Docker container labels, not registered operations.
+  "docs/reference/runtime/tool-runtime-backend-decision.md",
 ] as const;
 
 /** Backtick-quoted exact operation references: `family.name@version`. */

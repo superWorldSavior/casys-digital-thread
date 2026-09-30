@@ -1,5 +1,15 @@
 import { assertEquals } from "@std/assert";
 import { evaluatePresentationBoundary } from "./verify-native-workbench-presentation.ts";
+import {
+  WORKBENCH_GRAPH_ROOT,
+  type WorkbenchAuthorityGraph,
+} from "./workbench-authority-graph.ts";
+
+const readOnlyGraph: WorkbenchAuthorityGraph = {
+  version: 1,
+  root: WORKBENCH_GRAPH_ROOT,
+  modules: [{ id: WORKBENCH_GRAPH_ROOT, imports: [], markers: [] }],
+};
 
 Deno.test("native presentation gate accepts the bounded read-only Apps lifecycle", () => {
   const result = evaluatePresentationBoundary({
@@ -10,6 +20,88 @@ Deno.test("native presentation gate accepts the bounded read-only Apps lifecycle
   });
 
   assertEquals(result, { status: "ready" });
+});
+
+Deno.test("native shell may include a sibling live Chat without granting Workbench authority", () => {
+  assertEquals(
+    evaluatePresentationBoundary({
+      primitiveAdapterSource: "",
+      nativeBundle: "DesktopChat serverTools ui/notifications/tool-result",
+      workbenchAuthorityGraph: readOnlyGraph,
+    }),
+    { status: "ready" },
+  );
+});
+
+Deno.test("native presentation gate rejects live provider authority imported by Workbench", () => {
+  assertEquals(
+    evaluatePresentationBoundary({
+      primitiveAdapterSource: "",
+      nativeBundle: "DesktopChat serverTools ui/notifications/tool-result",
+      workbenchAuthorityGraph: {
+        version: 1,
+        root: WORKBENCH_GRAPH_ROOT,
+        modules: [
+          {
+            id: WORKBENCH_GRAPH_ROOT,
+            imports: ["src/ui/src/thread/mcp-app-live-host.ts"],
+            markers: [],
+          },
+          {
+            id: "src/ui/src/thread/mcp-app-live-host.ts",
+            imports: [],
+            markers: ["serverTools", "ui/notifications/tool-result"],
+          },
+        ],
+      },
+    }),
+    {
+      status: "failed",
+      errors: [
+        "read-only Workbench import graph contains provider authority markers: serverTools, ui/notifications/tool-result.",
+      ],
+    },
+  );
+});
+
+Deno.test("native presentation gate rejects unresolved Workbench graph", () => {
+  assertEquals(
+    evaluatePresentationBoundary({
+      primitiveAdapterSource: "",
+      nativeBundle: "",
+      workbenchAuthorityGraph: {
+        version: 1,
+        root: WORKBENCH_GRAPH_ROOT,
+        modules: [{
+          id: WORKBENCH_GRAPH_ROOT,
+          imports: ["missing-live-module"],
+          markers: [],
+        }],
+      },
+    }),
+    {
+      status: "failed",
+      errors: [
+        "Workbench authority graph has an unresolved module: missing-live-module.",
+      ],
+    },
+  );
+});
+
+Deno.test("native presentation gate still rejects retired domain renderers anywhere in shell", () => {
+  assertEquals(
+    evaluatePresentationBoundary({
+      primitiveAdapterSource: "",
+      nativeBundle: "DesktopChat GLTFLoader",
+      workbenchAuthorityGraph: readOnlyGraph,
+    }),
+    {
+      status: "failed",
+      errors: [
+        "native Workbench source or bundle contains provider authority or native viewer markers: GLTFLoader.",
+      ],
+    },
+  );
 });
 
 Deno.test("native presentation gate rejects any mcp-view import in the boundary file", () => {

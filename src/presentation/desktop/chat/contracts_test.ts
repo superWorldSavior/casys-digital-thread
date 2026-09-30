@@ -292,6 +292,34 @@ Deno.test("viewer resource-read accepts server-scoped artifact URIs", () => {
   );
 });
 
+Deno.test("archive-read carries stable capture identity without a live App", () => {
+  const request = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "archive-1",
+    command: "viewer.archive-read",
+    conversationId: "conversation:1",
+    viewerId: "message:2",
+  });
+  assertEquals(request.command, "viewer.archive-read");
+  const response = parseChatCommandResponse({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "archive-1",
+    ok: true,
+    conversationId: "conversation:1",
+    viewerCapture: {
+      viewerId: "message:2",
+      toolCallId: "native-call-1",
+      tool: "build123d_export",
+      server: "build123d",
+      toolInput: { script: "result = 1" },
+      toolResult: { ok: true },
+    },
+  });
+  assertEquals(response.viewerCapture?.viewerId, "message:2");
+  assertEquals(response.viewerCapture?.toolCallId, "native-call-1");
+  assertEquals(response.viewerCapture?.toolInput, { script: "result = 1" });
+});
+
 Deno.test("viewer App fetch response refuses malformed fingerprints", () => {
   assertThrows(
     () =>

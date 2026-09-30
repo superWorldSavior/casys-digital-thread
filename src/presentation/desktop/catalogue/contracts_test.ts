@@ -45,6 +45,7 @@ function entry(
       lastProbeAt: "2026-09-28T00:00:00.000Z",
       detail: "Prepared and capable.",
       engine: "ready",
+      runtime: "running",
     },
     isDefault: false,
     ...overrides,

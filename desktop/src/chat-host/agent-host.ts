@@ -6,7 +6,8 @@
  * `../chat/agent-profiles.ts`.
  */
 import { execFile } from "node:child_process";
-import { constants, promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
+import { constants, promises as fs, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgentLaunch,
@@ -25,6 +26,27 @@ export function builtinAdapterEntry(kind: "bundled-muse" | "bundled-codex"): str
     ? ["@bex-co", "muse-code-acp"]
     : ["@agentclientprotocol", "codex-acp"];
   return ["adapter", "node_modules", ...packagePath, "dist", "index.js"].join("/");
+}
+
+/**
+ * An unused optional adapter may be absent. A present artifact must still
+ * match its pin; a corrupt or unreadable artifact is never treated as absent.
+ */
+export function verifyOptionalPinnedArtifact(
+  path: string,
+  expectedSha256: string,
+  label: string,
+): boolean {
+  let resolved: string;
+  try {
+    resolved = realpathSync(path);
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+  const digest = createHash("sha256").update(readFileSync(resolved)).digest("hex");
+  if (digest !== expectedSha256) throw new Error(`${label} digest mismatch`);
+  return true;
 }
 
 export type LoadAgentProfiles =

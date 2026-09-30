@@ -169,18 +169,70 @@ async function bindingPort(directory: string): Promise<number | undefined> {
 }
 
 Deno.test("ensure prepares fresh on an allocated port and goes idle without demand", async () => {
-  const { lifecycle, backend, directory } = await harness();
+  const { lifecycle, backend, timers, directory } = await harness();
   try {
     const outcome = await lifecycle.ensure("build123d");
     assertEquals(outcome.status, "ready");
     assertEquals(backend.prepareCalls, [45678]);
     assertEquals(await bindingPort(directory), 45678);
     assertEquals(lifecycle.lifecycleState("build123d"), "idle");
+    assertEquals(timers.pending.length, 1);
     assertEquals(await lifecycle.resolveEndpoint("build123d"), {
       mcpUrl: "http://127.0.0.1:45678/mcp",
       healthUrl: "http://127.0.0.1:45678/health",
     });
   } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("prepare resets an elapsed startup idle timer and stops after its own delay", async () => {
+  const { lifecycle, backend, timers, directory } = await harness();
+  try {
+    lifecycle.syncDemand("build123d", []);
+    const startupTimer = timers.pending[0];
+    startupTimer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEquals(timers.pending.length, 0);
+
+    assertEquals((await lifecycle.prepare("build123d")).status, "ready");
+    assertEquals(lifecycle.lifecycleState("build123d"), "idle");
+    assertEquals(timers.pending.length, 1);
+    assertEquals(backend.stopCalls, 0);
+
+    timers.pending[0]();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEquals(backend.stopCalls, 1);
+    assertEquals(lifecycle.lifecycleState("build123d"), "stopped");
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("a queued startup timer cannot stop a newly prepared provider", async () => {
+  const { lifecycle, backend, timers, directory } = await harness();
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const prepare = backend.prepare.bind(backend);
+  backend.prepare = async (toolId, options) => {
+    entered.resolve();
+    await resume.promise;
+    return await prepare(toolId, options);
+  };
+  try {
+    lifecycle.syncDemand("build123d", []);
+    const startupTimer = timers.pending[0];
+    const preparing = lifecycle.prepare("build123d");
+    await entered.promise;
+    startupTimer(); // Its stop queues behind the in-progress preparation.
+    resume.resolve();
+    assertEquals((await preparing).status, "ready");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEquals(backend.stopCalls, 0);
+    assertEquals(lifecycle.lifecycleState("build123d"), "idle");
+    assertEquals(timers.pending.length, 1);
+  } finally {
+    resume.resolve();
     await Deno.remove(directory, { recursive: true });
   }
 });

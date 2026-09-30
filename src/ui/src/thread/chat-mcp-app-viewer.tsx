@@ -98,7 +98,8 @@ export function ChatMcpAppViewer({
     frameNode.style.height = "100%";
     mountNode.append(frameNode);
 
-    let phase: "starting" | "loading-app" | "app-loaded" | "invalid" = "starting";
+    let phase: "starting" | "loading-app" | "app-loaded" | "invalid" =
+      "starting";
     let finished = false;
     let revoked = false;
     let documentUrl: string | undefined;
@@ -354,7 +355,9 @@ function base64ToBytes(data: string): Uint8Array {
 async function sha256Fingerprint(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes));
   return `sha256:${
-    [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(
+    [...new Uint8Array(digest)].map((byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join(
       "",
     )
   }`;

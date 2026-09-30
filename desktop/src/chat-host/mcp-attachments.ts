@@ -9,7 +9,7 @@
  * and dropped for every profile on release. Endpoints are host-assigned:
  * unknown ids and non-loopback URLs are refused.
  */
-import type { McpRelay } from "./mcp-relay.ts";
+import type { McpRelay, McpRelayScope } from "./mcp-relay.ts";
 import type { McpCallTap } from "../chat/mcp-tap.ts";
 
 export interface McpAttachmentEndpoint {
@@ -43,6 +43,16 @@ export class McpAttachmentManager {
 
   relayUrl(mcpId: string): string | undefined {
     return this.#relays.get(mcpId)?.url;
+  }
+
+  /** One revocable turn endpoint on the existing provider relay listener. */
+  openScope(mcpId: string): McpRelayScope {
+    this.#requireConnectable(mcpId);
+    const relay = this.#relays.get(mcpId);
+    if (relay?.createScope === undefined) {
+      throw new Error("The MCP provider is not attached for result capture.");
+    }
+    return relay.createScope();
   }
 
   /** DEV-ONLY tap of one attached MCP relay, if the relay carries one. */

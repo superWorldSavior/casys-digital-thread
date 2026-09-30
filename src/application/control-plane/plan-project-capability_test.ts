@@ -24,6 +24,7 @@ import {
 } from "../../domain/capability/runtime/capability-runtime-catalog.ts";
 import { planProjectCapability } from "./plan-project-capability.ts";
 import { createFirstPartyCapabilityRuntimeCatalog } from "../../adapters/control-plane/first-party-capability-binding-catalog.ts";
+import { MCP_BUILD123D_071_IMAGE_REFERENCE } from "../../adapters/control-plane/first-party-capability-runtime-launch-groups.ts";
 import {
   validateCapabilityRuntimeAdminLock,
   validateCapabilityRuntimeAdminPolicy,
@@ -54,7 +55,7 @@ Deno.test("project capability planner selects exact trusted bindings and dedupli
   });
   assertEquals(
     plan.materials.filter((material) =>
-      material.imageReference.includes("mcp-build123d@sha256:aa9ae126")
+      material.imageReference === MCP_BUILD123D_071_IMAGE_REFERENCE
     ).length,
     2,
   );

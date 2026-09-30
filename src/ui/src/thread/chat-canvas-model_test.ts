@@ -21,6 +21,7 @@ import {
 
 function viewer(toolCallId: string): ChatToolViewerDto {
   return {
+    viewerId: toolCallId,
     toolCallId,
     messageId: "message-1",
     tool: "build123d_export",
@@ -38,7 +39,7 @@ function layout(): ChatCanvasLayoutDto {
         x: 10,
         y: 20,
         z: 1,
-        toolCallId: "tool-1",
+        viewerId: "tool-1",
       },
       { id: "node-note", kind: "note", x: 30, y: 40, z: 2, text: "hello" },
     ],
@@ -55,8 +56,8 @@ Deno.test("canvas resolution splits placed nodes from unplaced viewers", () => {
     "node-viewer",
     "node-note",
   ]);
-  assertEquals(resolved.placed[0].viewer?.toolCallId, "tool-1");
-  assertEquals(resolved.unplaced.map((entry) => entry.toolCallId), ["tool-2"]);
+  assertEquals(resolved.placed[0].viewer?.viewerId, "tool-1");
+  assertEquals(resolved.unplaced.map((entry) => entry.viewerId), ["tool-2"]);
   assertEquals(resolved.groups.length, 1);
 });
 
@@ -94,7 +95,10 @@ Deno.test("canvas node edits move, resize, group, and remove", () => {
 Deno.test("canvas titles, text, and done toggle per kind", () => {
   const titled = applyNodeTitle(layout(), "node-viewer", "First export");
   assertEquals(titled.nodes[0]?.title, "First export");
-  assertEquals(nodeDisplayTitle(titled.nodes[0]!, "build123d_export"), "First export");
+  assertEquals(
+    nodeDisplayTitle(titled.nodes[0]!, "build123d_export"),
+    "First export",
+  );
   const untitled = applyNodeTitle(titled, "node-viewer", undefined);
   assertEquals(untitled.nodes[0]?.title, undefined);
   assertEquals(
@@ -128,11 +132,11 @@ Deno.test("canvas additions guard duplicates and order z", () => {
     addCanvasGroup(layout(), { id: "group-1", title: "x" }),
     layout(),
   );
-  const placed = placeViewerNode(layout(), { id: "n2", toolCallId: "tool-9" });
+  const placed = placeViewerNode(layout(), { id: "n2", viewerId: "tool-9" });
   assertEquals(placed.nodes.length, 3);
   assertEquals(placed.nodes[2]?.x, 120);
   assertEquals(
-    placeViewerNode(layout(), { id: "n2", toolCallId: "tool-1" }),
+    placeViewerNode(layout(), { id: "n2", viewerId: "tool-1" }),
     layout(),
   );
 });

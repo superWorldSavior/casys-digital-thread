@@ -35,6 +35,7 @@ async function testFactory(options: {
   museVersion?: string;
   relayUrls?: Record<string, string>;
   codexVersion?: string;
+  codexMissingReason?: string;
 }): Promise<{
   factory: AgentRuntimeFactory;
   profilesError?: string;
@@ -48,6 +49,9 @@ async function testFactory(options: {
     nodeExecutable: "/runtime/node",
     acpxRuntimeUrl: "file:///runtime/acpx/dist/runtime.js",
     codexVersion: options.codexVersion ?? "0.144.6",
+    ...(options.codexMissingReason === undefined
+      ? {}
+      : { codexMissingReason: options.codexMissingReason }),
     projectRelayUrl: "http://127.0.0.1:3020/mcp",
     appEnv: { HOME: "/home/u", ...(options.appEnv ?? {}) },
     mcpDisplayName: (mcpId: string) => `Display ${mcpId}`,
@@ -84,9 +88,35 @@ Deno.test("factory starts on built-ins with muse default and resolved host", asy
     const muse = factory.statusOf(MUSE_AGENT_PROFILE_ID);
     assertEquals(muse.available, true);
     assertEquals(muse.version, "1.4.0");
+    assertEquals(factory.museExecutablePath(), "/muse/bin");
     const codex = factory.statusOf(CODEX_AGENT_PROFILE_ID);
     assertEquals(codex.available, true);
     assertEquals(codex.version, "0.144.6");
+  } finally {
+    await Deno.remove(dataRoot, { recursive: true });
+  }
+});
+
+Deno.test("missing optional Codex disables only Codex", async () => {
+  const dataRoot = await tempRoot();
+  try {
+    const { factory } = await testFactory({
+      dataRoot,
+      codexMissingReason: "Optional Codex executable is missing",
+      appEnv: { MUSE_CODE_EXECUTABLE: "/muse/bin" },
+      musePath: "/muse/bin",
+      museVersion: "1.4.0",
+    });
+    assertEquals(factory.statusOf(MUSE_AGENT_PROFILE_ID).available, true);
+    const codex = factory.statusOf(CODEX_AGENT_PROFILE_ID);
+    assertEquals(codex.available, false);
+    assertEquals(codex.missingReason, "Optional Codex executable is missing");
+    await assertRejects(
+      () => factory.ensureRuntime(CODEX_AGENT_PROFILE_ID, "standalone"),
+      Error,
+      "Optional Codex executable is missing",
+    );
+    await factory.ensureRuntime(MUSE_AGENT_PROFILE_ID, "standalone");
   } finally {
     await Deno.remove(dataRoot, { recursive: true });
   }
@@ -351,7 +381,7 @@ Deno.test("factory persists the default and reloads the file", async () => {
       }),
     );
     const reloaded = await factory.reload();
-    assertEquals(reloaded, { ok: true });
+    assertEquals(reloaded, { ok: true, invalidatedRuntimeKeys: [] });
     assertEquals(factory.defaultProfileId(), "lab");
     await factory.ensureRuntime("lab", "standalone");
     await Deno.writeTextFile(join(dataRoot, "agent-profiles.json"), "{nope");
@@ -360,5 +390,54 @@ Deno.test("factory persists the default and reloads the file", async () => {
     assertEquals(factory.defaultProfileId(), "lab");
   } finally {
     await Deno.remove(dataRoot, { recursive: true });
+  }
+});
+
+Deno.test("reload invalidates a changed custom command before the next runtime", async () => {
+  const dataRoot = await tempRoot();
+  try {
+    const oldEntry = join(dataRoot, "old.mjs");
+    const newEntry = join(dataRoot, "new.mjs");
+    await Deno.writeTextFile(oldEntry, "export {};\n");
+    await Deno.writeTextFile(newEntry, "export {};\n");
+    const file = join(dataRoot, "agent-profiles.json");
+    const custom = (entry: string) => ({
+      id: "lab",
+      displayName: "Lab",
+      agentName: "lab",
+      launch: { kind: "node-entry", entry },
+      authRecovery: "Sign in, then retry.",
+      modelsExposed: false,
+    });
+    await Deno.writeTextFile(file, JSON.stringify({ profiles: [custom(oldEntry)] }));
+    const { factory, created } = await testFactory({ dataRoot });
+    const oldAdapter = await factory.ensureRuntime("lab", "standalone");
+    let closed = false;
+    oldAdapter.close = () => {
+      closed = true;
+      return Promise.resolve();
+    };
+    await Deno.writeTextFile(file, JSON.stringify({ profiles: [custom(newEntry)] }));
+    assertEquals(await factory.reload(), {
+      ok: true,
+      invalidatedRuntimeKeys: ["standalone@lab"],
+    });
+    assertEquals(closed, false, "coordinator still owns the old adapter");
+    await factory.ensureRuntime("lab", "standalone");
+    assertEquals(created.map((entry) => entry.agentArgv[1]), [oldEntry, newEntry]);
+  } finally {
+    await Deno.remove(dataRoot, { recursive: true });
+  }
+});
+
+Deno.test("failed default persistence leaves the effective default unchanged", async () => {
+  const nonDirectory = await Deno.makeTempFile({ prefix: "casys-agent-default-" });
+  try {
+    const { factory } = await testFactory({ dataRoot: nonDirectory });
+    assertEquals(factory.defaultProfileId(), MUSE_AGENT_PROFILE_ID);
+    await assertRejects(() => factory.saveDefault(CODEX_AGENT_PROFILE_ID));
+    assertEquals(factory.defaultProfileId(), MUSE_AGENT_PROFILE_ID);
+  } finally {
+    await Deno.remove(nonDirectory);
   }
 });

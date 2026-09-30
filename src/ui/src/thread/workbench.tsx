@@ -274,9 +274,10 @@ export function ThreadWorkbench({
   const [viewerSessions, setViewerSessions] = useState<
     ThreadViewerSessionsProjection
   >();
-  const [settledViewerSessionsBasisKey, setSettledViewerSessionsBasisKey] = useState<
-    string
-  >();
+  const [settledViewerSessionsBasisKey, setSettledViewerSessionsBasisKey] =
+    useState<
+      string
+    >();
   const [selection, setSelection] = useState<ThreadRef>();
   const [graphSelection, setGraphSelection] = useState<ThreadGraphSelection>();
   const [lineageFocus, setLineageFocus] = useState<ThreadGraphRef>();
@@ -1282,8 +1283,9 @@ export function ThreadWorkbench({
           </strong>
           <span>
             The technical thread is at revision{" "}
-            {workbench.alignment.currentThreadRevision}, while project decisions remain
-            anchored to revision {workbench.alignment.projectThreadRevision}.
+            {workbench.alignment.currentThreadRevision}, while project decisions
+            remain anchored to revision{" "}
+            {workbench.alignment.projectThreadRevision}.
           </span>
         </Notice>
       )}
@@ -1297,9 +1299,10 @@ export function ThreadWorkbench({
               : "references do"} not resolve in this thread revision
           </strong>
           <span>
-            These project records cite thread entities or snapshots that the exact
-            revision cannot resolve (usually residues of abandoned work). The rest of
-            this page resolved. {workbench.unresolvedEvidenceReferences
+            These project records cite thread entities or snapshots that the
+            exact revision cannot resolve (usually residues of abandoned work).
+            The rest of this page resolved.{" "}
+            {workbench.unresolvedEvidenceReferences
               .map((issue) => issue.path)
               .join(", ")}
           </span>
@@ -1668,14 +1671,17 @@ function workspaceEyebrow(
 function operationsHeadline(
   project: EngineeringProjectSnapshot,
 ): string {
-  const running = project.agentRuns.filter((run) => run.status === "running").length;
+  const running =
+    project.agentRuns.filter((run) => run.status === "running").length;
   const queued = project.agentRuns.filter((run) => run.status === "queued")
     .length;
   const confirmations = pendingHumanConfirmationDecisions(project).length;
   const preparations = agentPreparationDecisions(project).length;
   return `${running} running · ${queued} queued · ${confirmations} human confirmation${
     confirmations === 1 ? "" : "s"
-  } · ${preparations} agent proposal${preparations === 1 ? "" : "s"} in preparation`;
+  } · ${preparations} agent proposal${
+    preparations === 1 ? "" : "s"
+  } in preparation`;
 }
 
 function workspaceTitle(
@@ -1771,7 +1777,8 @@ function EvidenceCaseNavigator({
                 {sentenceCaseLabel(item.case.family)}
               </span>
               <span className="mt-1 block break-words text-xs text-muted-foreground">
-                {item.case.id} · r{item.case.revision} · {item.nodeCount} linked items
+                {item.case.id} · r{item.case.revision} · {item.nodeCount}{" "}
+                linked items
               </span>
               <span
                 className="mt-2 line-clamp-2 block text-xs text-foreground/75"
@@ -1784,8 +1791,8 @@ function EvidenceCaseNavigator({
         })}
         {cases.length === 0 && (
           <div className="rounded-lg border border-dashed border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-            No engineering case is recorded in this exact snapshot. Catalog status:{" "}
-            {catalog.status}.
+            No engineering case is recorded in this exact snapshot. Catalog
+            status: {catalog.status}.
           </div>
         )}
       </div>
@@ -1846,7 +1853,9 @@ function MetricTiles(
 }
 
 function Mono({ children }: { children: ReactNode }): JSX.Element {
-  return <code className="font-mono text-xs text-muted-foreground">{children}</code>;
+  return (
+    <code className="font-mono text-xs text-muted-foreground">{children}</code>
+  );
 }
 
 function GraphEdgeInspector({ snapshot, edge, history, onSelectGraphNode }: {
@@ -1904,11 +1913,12 @@ function GraphEdgeInspector({ snapshot, edge, history, onSelectGraphNode }: {
       {
         id: "asserted-by",
         label: "Asserted by",
-        value: `${edge.analysis.assertedBy.kind} · ${edge.analysis.assertedBy.id}${
-          edge.analysis.assertedBy.version
-            ? ` @ ${edge.analysis.assertedBy.version}`
-            : ""
-        }`,
+        value:
+          `${edge.analysis.assertedBy.kind} · ${edge.analysis.assertedBy.id}${
+            edge.analysis.assertedBy.version
+              ? ` @ ${edge.analysis.assertedBy.version}`
+              : ""
+          }`,
       },
       {
         id: "analysis-scope",
@@ -1997,9 +2007,10 @@ function GraphEdgeInspector({ snapshot, edge, history, onSelectGraphNode }: {
         {!edge.attestation && edge.analysis
           ? (
             <Notice title="Qualified analysis assertion" tone="info">
-              This semantic relation is backed by the exact evidence listed above and is
-              classified as{" "}
-              {edge.analysis.epistemicBasis}. It does not grant execution authority.
+              This semantic relation is backed by the exact evidence listed
+              above and is classified as{" "}
+              {edge.analysis.epistemicBasis}. It does not grant execution
+              authority.
             </Notice>
           )
           : !edge.attestation && (

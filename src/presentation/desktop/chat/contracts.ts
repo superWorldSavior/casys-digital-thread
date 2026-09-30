@@ -172,6 +172,9 @@ export interface ChatAgentProfileDto {
  * the exact result bytes cross only through `viewer.open`.
  */
 export interface ChatToolViewerDto {
+  /** Stable identity of this retained result, even when native call ids repeat. */
+  readonly viewerId: string;
+  /** Native agent/tool call id, retained for provenance only. */
   readonly toolCallId: string;
   readonly messageId: string;
   readonly tool: string;
@@ -236,6 +239,7 @@ export interface ChatViewerAppDto {
 }
 
 export interface ChatViewerSessionDto {
+  readonly viewerId: string;
   readonly toolCallId: string;
   readonly tool: string;
   readonly server: string;
@@ -256,6 +260,16 @@ export interface ChatViewerResourceDto {
   readonly data: string;
   /** Byte origin: retained archive bytes or a live provider read. */
   readonly source: "saved" | "live";
+}
+
+/** Exact retained source and result, readable without a live MCP App. */
+export interface ChatViewerCaptureDto {
+  readonly viewerId: string;
+  readonly toolCallId: string;
+  readonly tool: string;
+  readonly server: string;
+  readonly toolInput: Readonly<Record<string, ChatViewerJson>>;
+  readonly toolResult: ChatViewerJson;
 }
 
 /**
@@ -283,7 +297,9 @@ export interface ChatCanvasNodeDto {
   readonly width?: number;
   readonly height?: number;
   readonly z: number;
-  /** Retained tool result identity; viewer nodes only. */
+  /** Retained result identity; viewer nodes only. */
+  readonly viewerId?: string;
+  /** Legacy Canvas reference; normalized on read when uniquely resolvable. */
   readonly toolCallId?: string;
   /** Lightweight note text; note nodes only. */
   readonly text?: string;
@@ -408,6 +424,13 @@ export type ChatCommandRequest =
   | {
     readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
     readonly requestId: string;
+    readonly command: "viewer.archive-read";
+    readonly conversationId: string;
+    readonly viewerId: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
     readonly command: "agent.select";
     readonly conversationId: string;
     readonly profileId: string;
@@ -446,6 +469,7 @@ export interface ChatCommandResponse {
   readonly viewer?: ChatViewerSessionDto;
   readonly viewerResult?: ChatViewerJson;
   readonly viewerResource?: ChatViewerResourceDto;
+  readonly viewerCapture?: ChatViewerCaptureDto;
   readonly layout?: ChatCanvasLayoutDto;
 }
 
@@ -542,6 +566,15 @@ export function parseChatCommandRequest(value: unknown): ChatCommandRequest {
     });
   }
   const conversationId = opaqueId(input.conversationId, "conversationId");
+  if (command === "viewer.archive-read") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      conversationId,
+      viewerId: opaqueId(input.viewerId, "viewerId"),
+    });
+  }
   if (command === "agent.select") {
     return Object.freeze({
       protocol: DESKTOP_CHAT_PROTOCOL,
@@ -1034,6 +1067,9 @@ export function parseChatCommandResponse(value: unknown): ChatCommandResponse {
   const viewerResource = input.viewerResource === undefined
     ? undefined
     : parseViewerResourceDto(input.viewerResource);
+  const viewerCapture = input.viewerCapture === undefined
+    ? undefined
+    : parseViewerCaptureDto(input.viewerCapture);
   const layout = input.layout === undefined
     ? undefined
     : parseChatCanvasLayout(input.layout);
@@ -1046,6 +1082,7 @@ export function parseChatCommandResponse(value: unknown): ChatCommandResponse {
     ...(viewer === undefined ? {} : { viewer }),
     ...(viewerResult === undefined ? {} : { viewerResult }),
     ...(viewerResource === undefined ? {} : { viewerResource }),
+    ...(viewerCapture === undefined ? {} : { viewerCapture }),
     ...(layout === undefined ? {} : { layout }),
   });
 }
@@ -1103,11 +1140,15 @@ function parseConversationDto(value: unknown): ChatConversationDto {
 
 function parseToolViewerDto(value: unknown): ChatToolViewerDto {
   const input = record(value, "tool viewer");
+  const toolCallId = opaqueId(input.toolCallId, "viewer toolCallId");
   const archive = input.archive === undefined
     ? undefined
     : parseViewerArchiveDto(input.archive);
   return Object.freeze({
-    toolCallId: opaqueId(input.toolCallId, "viewer toolCallId"),
+    viewerId: input.viewerId === undefined
+      ? toolCallId
+      : opaqueId(input.viewerId, "viewer id"),
+    toolCallId,
     messageId: opaqueId(input.messageId, "viewer messageId"),
     tool: viewerToolName(input.tool),
     appUri: viewerUiUri(input.appUri),
@@ -1163,11 +1204,15 @@ function parseViewerArtifactDto(value: unknown): ChatViewerArtifactDto {
 
 function parseViewerSessionDto(value: unknown): ChatViewerSessionDto {
   const input = record(value, "viewer session");
+  const toolCallId = opaqueId(input.toolCallId, "viewer toolCallId");
   if (!Array.isArray(input.serverTools) || input.serverTools.length > 64) {
     throw new TypeError("viewer server tools are invalid");
   }
   return Object.freeze({
-    toolCallId: opaqueId(input.toolCallId, "viewer toolCallId"),
+    viewerId: input.viewerId === undefined
+      ? toolCallId
+      : opaqueId(input.viewerId, "viewer id"),
+    toolCallId,
     tool: viewerToolName(input.tool),
     server: opaqueId(input.server, "viewer server"),
     appUri: viewerUiUri(input.appUri),
@@ -1177,6 +1222,18 @@ function parseViewerSessionDto(value: unknown): ChatViewerSessionDto {
     serverTools: Object.freeze(
       input.serverTools.map((entry) => viewerToolName(entry)),
     ),
+  });
+}
+
+function parseViewerCaptureDto(value: unknown): ChatViewerCaptureDto {
+  const input = record(value, "viewer capture");
+  return Object.freeze({
+    viewerId: opaqueId(input.viewerId, "viewer id"),
+    toolCallId: opaqueId(input.toolCallId, "viewer toolCallId"),
+    tool: viewerToolName(input.tool),
+    server: opaqueId(input.server, "viewer server"),
+    toolInput: viewerArguments(input.toolInput),
+    toolResult: viewerJson(input.toolResult, "viewer tool result"),
   });
 }
 
@@ -1274,13 +1331,18 @@ function parseChatCanvasNode(
     if (input.text !== undefined || input.done !== undefined) {
       throw new TypeError("canvas viewer nodes carry no text");
     }
+    if ((input.viewerId === undefined) === (input.toolCallId === undefined)) {
+      throw new TypeError("canvas viewer nodes require one result identity");
+    }
     return Object.freeze({
       ...base,
       kind: "viewer",
-      toolCallId: opaqueId(input.toolCallId, "canvas node tool"),
+      ...(input.viewerId === undefined
+        ? { toolCallId: opaqueId(input.toolCallId, "canvas node tool") }
+        : { viewerId: opaqueId(input.viewerId, "canvas node viewer") }),
     });
   }
-  if (input.toolCallId !== undefined) {
+  if (input.toolCallId !== undefined || input.viewerId !== undefined) {
     throw new TypeError("canvas note nodes carry no tool result");
   }
   const done = input.done === undefined ? undefined : optionalDone(input.done);

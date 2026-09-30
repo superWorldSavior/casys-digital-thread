@@ -15,9 +15,8 @@ import {
   parseChatCommandRequest,
   parseChatSnapshotRequest,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
-import { builtinAdapterEntry } from "./agent-host.ts";
+import { builtinAdapterEntry, verifyOptionalPinnedArtifact } from "./agent-host.ts";
 import { AgentRuntimeFactory } from "./agent-runtime-factory.ts";
-import { createMcpCallTap, type McpTapQuery } from "../chat/mcp-tap.ts";
 import {
   McpAttachmentManager,
   parseMcpEnsurePayload,
@@ -43,14 +42,11 @@ const bundleManifest = JSON.parse(
 ) as Record<string, unknown>;
 const runtimeTarget = parseImplementedTarget(bundleManifest.target);
 const targetArtifacts = resolveTargetArtifacts(runtimeTarget);
-const codexAdapterEntry = realpathSync(
-  join(runtimeRoot, builtinAdapterEntry("bundled-codex")),
-);
 const museAdapterEntry = realpathSync(
   join(runtimeRoot, builtinAdapterEntry("bundled-muse")),
 );
 const acpxPackage = realpathSync(join(runtimeRoot, "acpx"));
-assertRuntimePins(acpxPackage, codexAdapterEntry, museAdapterEntry);
+const codexMissingReason = assertRuntimePins(acpxPackage, museAdapterEntry);
 await mkdir(join(dataRoot, "workspace"), { recursive: true, mode: 0o700 });
 
 const mcpServers = connectableMcpServers();
@@ -63,11 +59,6 @@ const mcpServers = connectableMcpServers();
 const projectRelay = await startMcpRelay({
   upstreamMcpUrl: "http://127.0.0.1:3020/mcp",
 });
-// DEV-ONLY (#59): relay correlation taps attribute provider responses to
-// output-less tool events. Production never sets this variable, so the
-// packaged app records nothing and the limitation stands there.
-const devRelayTap = process.env.CASYS_DEV_RELAY_TAP === "1";
-if (devRelayTap) console.error("[chat-host] DEV relay tap enabled");
 // One runtime per agent profile x MCP set: the factory creates them
 // lazily; the legacy Codex profile keeps the historical session stores
 // so native sessions resume, every other profile is namespaced (#58).
@@ -78,13 +69,37 @@ const { factory: agentFactory, profilesError } = await AgentRuntimeFactory.creat
   nodeExecutable: process.execPath,
   acpxRuntimeUrl: pathToFileURL(join(acpxPackage, "dist", "runtime.js")).href,
   codexVersion: pins.adapter.codexPackageVersion,
+  ...(codexMissingReason === undefined ? {} : { codexMissingReason }),
   projectRelayUrl: projectRelay.url,
-  appEnv: process.env,
+  // Keep the original launch environment for reload resolution. The resolved
+  // Muse executable is injected below for the bundled adapter's child.
+  appEnv: { ...process.env },
   mcpDisplayName: (mcpId) =>
     mcpServers.find((server) => server.id === mcpId)?.displayName ?? mcpId,
   relayUrl: (mcpId) => attachments.relayUrl(mcpId),
-  createAdapter: (options) => createPinnedRuntimeAdapter(options),
+  createAdapter: (options) => {
+    const servers = options.mcpServers.map((server) => {
+      const registered = mcpServers.find((entry) => entry.displayName === server.name);
+      return registered === undefined ? server : { ...server, id: registered.id };
+    });
+    const captured = servers.length === 1 && servers[0].id !== undefined;
+    return createPinnedRuntimeAdapter({
+      ...options,
+      mcpServers: servers,
+      ...(captured
+        ? {
+          mcpCapture: {
+            openScope: (server) => {
+              if (server.id === undefined) throw new Error("MCP identity is missing.");
+              return attachments.openScope(server.id);
+            },
+          },
+        }
+        : {}),
+    });
+  },
 });
+syncMuseExecutableEnvironment();
 if (profilesError !== undefined) {
   console.error(`[chat-host] custom agent profiles ignored: ${profilesError}`);
 }
@@ -102,12 +117,6 @@ const coordinator = await ChatCoordinator.create({
   mcpServers,
   probeMcp: (server) => probeChatMcpServer(server),
   resolveMcpEndpoint: (mcpId) => attachments.resolve(mcpId),
-  ...(devRelayTap
-    ? {
-      findMcpTapCall: (mcpId: string, query: McpTapQuery) =>
-        attachments.relayTap(mcpId)?.takeMatch(query),
-    }
-    : {}),
   viewerBackend: createRegistryViewerBackend({
     servers: mcpServers,
     resolveEndpoint: (server) => attachments.resolve(server),
@@ -117,11 +126,7 @@ const coordinator = await ChatCoordinator.create({
 });
 const attachments = new McpAttachmentManager({
   connectableIds: mcpServers.map((server) => server.id),
-  startRelay: (upstreamMcpUrl) =>
-    startMcpRelay({
-      upstreamMcpUrl,
-      ...(devRelayTap ? { tap: createMcpCallTap() } : {}),
-    }),
+  startRelay: (upstreamMcpUrl) => startMcpRelay({ upstreamMcpUrl }),
   releaseRuntimes: (mcpId) => {
     void agentFactory.releaseStandalone(mcpId).then((keys) => {
       for (const key of keys) coordinator.unregisterRuntime(key);
@@ -163,7 +168,11 @@ for await (const line of lines) {
       writeResponse(request.requestId, coordinator.snapshot(input.conversationId));
     } else if (request.method === "command") {
       const input = parseChatCommandRequest(request.payload);
-      writeResponse(request.requestId, await coordinator.command(input));
+      const result = await coordinator.command(input);
+      if (input.command === "agent.reload-profiles" && result.ok) {
+        syncMuseExecutableEnvironment();
+      }
+      writeResponse(request.requestId, result);
     } else if (request.method === "mcp.ensure") {
       const input = parseMcpEnsurePayload(request.payload);
       await attachments.ensure(input.mcpId, {
@@ -192,6 +201,17 @@ async function stop(): Promise<void> {
   await coordinator.stop();
   await attachments.closeAll();
   await projectRelay.close().catch(() => undefined);
+}
+
+function syncMuseExecutableEnvironment(): void {
+  const resolved = agentFactory.museExecutablePath();
+  if (resolved === undefined) {
+    delete process.env.MUSE_CODE_EXECUTABLE;
+  } else {
+    // ACPX builds each adapter's spawn environment from process.env. Its
+    // bundled Muse adapter uses this absolute override, not HOME lookup.
+    process.env.MUSE_CODE_EXECUTABLE = resolved;
+  }
 }
 
 function parseIpcRequest(value: unknown): IpcRequest {
@@ -253,9 +273,8 @@ function isExactAbsolutePath(
 
 function assertRuntimePins(
   acpxPackage: string,
-  adapter: string,
   museAdapter: string,
-): void {
+): string | undefined {
   if (process.versions.node !== pins.nodeVersion) {
     throw new Error("packaged Node runtime version mismatch");
   }
@@ -270,12 +289,10 @@ function assertRuntimePins(
   if (lifelineDigest !== targetArtifacts.acpxLifelineSha256) {
     throw new Error("packaged acpx lifeline digest mismatch");
   }
-  if (fileSha256(adapter) !== pins.adapter.entrySha256) {
-    throw new Error("packaged ACP adapter digest mismatch");
-  }
   if (fileSha256(museAdapter) !== pins.adapterMuse.entrySha256) {
     throw new Error("packaged Muse ACP adapter digest mismatch");
   }
+  const codexAdapter = join(runtimeRoot, builtinAdapterEntry("bundled-codex"));
   const codexBinary = join(
     runtimeRoot,
     "adapter",
@@ -283,9 +300,19 @@ function assertRuntimePins(
     ...targetArtifacts.codexPackage.split("/"),
     ...targetArtifacts.codexBinaryPath.split("/"),
   );
-  if (fileSha256(codexBinary) !== targetArtifacts.codexBinarySha256) {
-    throw new Error("packaged Codex executable digest mismatch");
-  }
+  const adapterPresent = verifyOptionalPinnedArtifact(
+    codexAdapter,
+    pins.adapter.entrySha256,
+    "packaged Codex ACP adapter",
+  );
+  const binaryPresent = verifyOptionalPinnedArtifact(
+    codexBinary,
+    targetArtifacts.codexBinarySha256,
+    "packaged Codex executable",
+  );
+  return adapterPresent && binaryPresent
+    ? undefined
+    : "Optional Codex adapter or executable is missing from this app.";
 }
 
 function fileSha256(path: string): string {

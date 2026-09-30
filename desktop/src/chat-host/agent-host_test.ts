@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "jsr:@std/assert@1.0.14";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   builtinAdapterEntry,
@@ -7,6 +8,7 @@ import {
   parseMuseVersion,
   resolveMuseHost,
   saveAgentProfilesFile,
+  verifyOptionalPinnedArtifact,
 } from "./agent-host.ts";
 
 Deno.test("builtin adapter entries resolve per kind", () => {
@@ -18,6 +20,27 @@ Deno.test("builtin adapter entries resolve per kind", () => {
     builtinAdapterEntry("bundled-codex"),
     "adapter/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
   );
+});
+
+Deno.test("optional adapter absence is isolated but present bytes stay pinned", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-optional-adapter-" });
+  try {
+    const path = join(root, "codex.js");
+    const expected = createHash("sha256").update("pinned").digest("hex");
+    assertEquals(verifyOptionalPinnedArtifact(path, expected, "Codex"), false);
+    await Deno.writeTextFile(path, "pinned");
+    assertEquals(verifyOptionalPinnedArtifact(path, expected, "Codex"), true);
+    await Deno.writeTextFile(path, "changed");
+    let message = "";
+    try {
+      verifyOptionalPinnedArtifact(path, expected, "Codex");
+    } catch (error) {
+      message = error instanceof Error ? error.message : "unknown";
+    }
+    assertEquals(message, "Codex digest mismatch");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("missing profiles file loads as built-ins only", async () => {

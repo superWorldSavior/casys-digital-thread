@@ -62,9 +62,7 @@ Deno.test(
     const zed = mechanicalCase(Z_ID, 1, "b", "zed");
     assertEquals(Z_ID < A_UMLAUT_ID, true);
     assertEquals(
-      projectCurrentEngineeringCases([umlaut, zed]).current.map((item) =>
-        item.id
-      ),
+      projectCurrentEngineeringCases([umlaut, zed]).current.map((item) => item.id),
       [Z_ID, A_UMLAUT_ID],
     );
     assertEquals(

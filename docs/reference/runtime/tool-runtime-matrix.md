@@ -21,6 +21,25 @@ Unclaimed means untested and unsupported: the backend refuses with explicit
 recovery codes instead of guessing (`install-unsupported-platform`,
 `arch-unsupported`, `os-not-linux`).
 
+## Agent and provider chat path
+
+This is a separate integration status from the Docker measurements above. The current
+source supports only the curated Build123d attachment for standalone chat; a healthy
+provider alone does not prove the agent, viewer and saved-work journey.
+
+| Agent profile | Build123d attachment and result capture | Current evidence |
+| --- | --- | --- |
+| Muse (default, bundled ACP adapter 0.7.0) | Implemented. The host resolves the Muse executable and passes its exact path to the adapter. A per-turn relay scope captures the provider's exact tool request and response without requiring ACP `rawOutput`. | Deterministic host/runtime tests; current packaged Muse create → view → edit → export → reopen proof pending in #53. |
+| Codex (selectable legacy) | Implemented with its own native sessions. Missing optional Codex artifacts mark this profile unavailable while Muse remains usable. | Real packaged-host geometry → edit → three exports → offline reopen, 2026-09-30, with existing login in a private compatible configuration. Native UI and fresh installation remain unproved. See the [qualification record](desktop-host-qualification-2026-09-30.md). |
+| User-configured ACP adapter | Explicit profile file; no blanket Build123d compatibility claim. | Adapter-specific qualification required. |
+
+Native ACP tool cards are transcript text. Retained viewer results use a distinct
+`viewerId`; source and archived exports can be reopened from saved work without the
+provider, while the live App viewer requires the owning MCP connection. The development
+relay tap is not required for production capture. An unretained artifact is labelled
+`missing`; live fallback must match the recorded digest and size. This path does not
+change the separate Digital Thread operation and MRTR authority model.
+
 ## Reuse path, measured (macOS/arm64, Docker Desktop present)
 
 Driver: `ToolRuntimeHost.prepare("build123d")` against the real daemon

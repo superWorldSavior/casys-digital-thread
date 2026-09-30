@@ -170,8 +170,7 @@ Deno.test("current evidence preset paints entities and their recorded edges only
 Deno.test("initial frame keeps current anchors and bounds a bulky thread", () => {
   const chain = Array.from(
     { length: 300 },
-    (_, i) =>
-      node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
+    (_, i) => node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
   );
   const stale = node("a-old", "artifact", "recorded-system");
   const req1 = node("req-1", "requirement", "recorded-system");
@@ -277,8 +276,7 @@ Deno.test("initial frame paints the whole kind projection under the bound", () =
 Deno.test("initial frame without anchors degrades to deterministic truncation", () => {
   const chain = Array.from(
     { length: 200 },
-    (_, i) =>
-      node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
+    (_, i) => node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
   );
   const edges: ThreadGraphEdge[] = [];
   for (let i = 0; i < chain.length - 1; i++) {
@@ -310,8 +308,7 @@ Deno.test("initial frame without anchors degrades to deterministic truncation", 
 Deno.test("initial frame honours hidden kinds and keeps counts exact", () => {
   const chain = Array.from(
     { length: 160 },
-    (_, i) =>
-      node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
+    (_, i) => node(`a${String(i).padStart(3, "0")}`, "artifact", "recorded-system"),
   );
   const probe = node("probe", "observation", "recorded-system");
   const edges: ThreadGraphEdge[] = [];

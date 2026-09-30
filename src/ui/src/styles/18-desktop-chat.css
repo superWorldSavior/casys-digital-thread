@@ -643,6 +643,12 @@
   align-items: center;
 }
 
+.desktop-chat-canvas .desktop-chat-session-work {
+  flex-shrink: 0;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
 .desktop-chat-canvas-toolbar label {
   display: inline-flex;
   gap: 0.3rem;
