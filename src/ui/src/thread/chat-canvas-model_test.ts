@@ -9,7 +9,11 @@ import {
   applyNodeGroup,
   applyNodeMove,
   applyNodeResize,
+  applyNodeTitle,
+  applyNoteDone,
+  applyNoteText,
   autoPlace,
+  nodeDisplayTitle,
   placeViewerNode,
   removeCanvasNode,
   resolveCanvasNodes,
@@ -85,6 +89,29 @@ Deno.test("canvas node edits move, resize, group, and remove", () => {
   const removed = removeCanvasNode(layout(), "node-note");
   assertEquals(removed.nodes.map((node) => node.id), ["node-viewer"]);
   assertEquals(removeCanvasNode(layout(), "missing"), layout());
+});
+
+Deno.test("canvas titles, text, and done toggle per kind", () => {
+  const titled = applyNodeTitle(layout(), "node-viewer", "First export");
+  assertEquals(titled.nodes[0]?.title, "First export");
+  assertEquals(nodeDisplayTitle(titled.nodes[0]!, "build123d_export"), "First export");
+  const untitled = applyNodeTitle(titled, "node-viewer", undefined);
+  assertEquals(untitled.nodes[0]?.title, undefined);
+  assertEquals(
+    nodeDisplayTitle(untitled.nodes[0]!, "build123d_export"),
+    "build123d_export",
+  );
+  assertEquals(nodeDisplayTitle({ kind: "note" }), "Note");
+  assertEquals(applyNodeTitle(layout(), "missing", "x"), layout());
+  const edited = applyNoteText(layout(), "node-note", "updated");
+  assertEquals(edited.nodes[1]?.text, "updated");
+  assertEquals(applyNoteText(layout(), "node-note", ""), layout());
+  assertEquals(applyNoteText(layout(), "node-viewer", "x"), layout());
+  const done = applyNoteDone(layout(), "node-note", true);
+  assertEquals(done.nodes[1]?.done, true);
+  const undone = applyNoteDone(done, "node-note", false);
+  assertEquals(undone.nodes[1]?.done, undefined);
+  assertEquals(applyNoteDone(layout(), "node-viewer", true), layout());
 });
 
 Deno.test("canvas additions guard duplicates and order z", () => {

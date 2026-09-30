@@ -9,15 +9,16 @@ import type {
   DESKTOP_CHAT_PROTOCOL,
   DesktopChatBindingCommandRequest,
 } from "../../../presentation/desktop/chat/contracts.ts";
-import {
-  type ChatViewerDispatch,
-  ChatViewerPanel,
-} from "./chat-viewer-panel.tsx";
+import { type ChatViewerDispatch, ChatViewerPanel } from "./chat-viewer-panel.tsx";
 import {
   addCanvasGroup,
   addCanvasNote,
   applyNodeGroup,
   applyNodeMove,
+  applyNodeTitle,
+  applyNoteDone,
+  applyNoteText,
+  nodeDisplayTitle,
   placeViewerNode,
   removeCanvasNode,
   resolveCanvasNodes,
@@ -86,9 +87,7 @@ export function ChatCanvas({
     }).catch((cause: unknown) => {
       if (!cancelled) {
         setError(
-          cause instanceof Error
-            ? cause.message
-            : "Canvas layout failed to load.",
+          cause instanceof Error ? cause.message : "Canvas layout failed to load.",
         );
       }
     });
@@ -114,9 +113,7 @@ export function ChatCanvas({
         }
       }).catch((cause: unknown) => {
         setError(
-          cause instanceof Error
-            ? cause.message
-            : "Canvas layout failed to save.",
+          cause instanceof Error ? cause.message : "Canvas layout failed to save.",
         );
       });
     }, SAVE_DELAY_MS);
@@ -128,8 +125,7 @@ export function ChatCanvas({
   }, [save]);
 
   const resolved = useMemo(
-    () =>
-      layout === undefined ? undefined : resolveCanvasNodes(layout, viewers),
+    () => layout === undefined ? undefined : resolveCanvasNodes(layout, viewers),
     [layout, viewers],
   );
 
@@ -259,8 +255,10 @@ export function ChatCanvas({
             groups={resolved.groups}
             dispatch={dispatch}
             onMove={(x, y) => update(applyNodeMove(layout, node.id, x, y))}
-            onGroup={(groupId) =>
-              update(applyNodeGroup(layout, node.id, groupId))}
+            onGroup={(groupId) => update(applyNodeGroup(layout, node.id, groupId))}
+            onTitle={(title) => update(applyNodeTitle(layout, node.id, title))}
+            onText={(text) => update(applyNoteText(layout, node.id, text))}
+            onDone={(done) => update(applyNoteDone(layout, node.id, done))}
             onRemove={() => update(removeCanvasNode(layout, node.id))}
           />
         ))}
@@ -277,6 +275,9 @@ function CanvasNode({
   dispatch,
   onMove,
   onGroup,
+  onTitle,
+  onText,
+  onDone,
   onRemove,
 }: {
   readonly conversationId: string;
@@ -286,18 +287,24 @@ function CanvasNode({
   readonly dispatch: ChatViewerDispatch | undefined;
   readonly onMove: (x: number, y: number) => void;
   readonly onGroup: (groupId: string | undefined) => void;
+  readonly onTitle: (title: string | undefined) => void;
+  readonly onText: (text: string) => void;
+  readonly onDone: (done: boolean) => void;
   readonly onRemove: () => void;
 }): JSX.Element {
   const drag = useRef<{ readonly dx: number; readonly dy: number } | undefined>(
     undefined,
   );
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingText, setEditingText] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(node.title ?? "");
+  const [draftText, setDraftText] = useState(node.text ?? "");
+  const title = nodeDisplayTitle(node, viewer?.tool);
   return (
     <article
       className="desktop-chat-canvas-node"
       style={{ left: node.x, top: node.y, zIndex: node.z }}
-      aria-label={node.kind === "viewer"
-        ? `Viewer ${viewer?.tool ?? ""}`
-        : "Note"}
+      aria-label={node.kind === "viewer" ? `Viewer ${title}` : "Note"}
     >
       <header
         className="desktop-chat-canvas-node-header"
@@ -329,17 +336,56 @@ function CanvasNode({
           drag.current = undefined;
         }}
       >
-        <span>
-          {node.kind === "viewer" ? (viewer?.tool ?? "Viewer") : "Note"}
-        </span>
+        {node.kind === "note" && (
+          <input
+            type="checkbox"
+            checked={node.done ?? false}
+            aria-label="Note done"
+            onChange={(event) => onDone(event.currentTarget.checked)}
+          />
+        )}
+        {editingTitle
+          ? (
+            <input
+              value={draftTitle}
+              maxLength={200}
+              aria-label="Node title"
+              autoFocus
+              onChange={(event) => setDraftTitle(event.currentTarget.value)}
+              onBlur={() => {
+                onTitle(draftTitle.trim() === "" ? undefined : draftTitle.trim());
+                setEditingTitle(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                if (event.key === "Escape") {
+                  setDraftTitle(node.title ?? "");
+                  setEditingTitle(false);
+                }
+              }}
+            />
+          )
+          : <span>{title}</span>}
+        {!editingTitle && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label="Rename node"
+            onClick={() => {
+              setDraftTitle(node.title ?? "");
+              setEditingTitle(true);
+            }}
+          >
+            ✎
+          </Button>
+        )}
         <select
           value={node.groupId ?? ""}
           aria-label="Node group"
           onChange={(event) =>
             onGroup(
-              event.currentTarget.value === ""
-                ? undefined
-                : event.currentTarget.value,
+              event.currentTarget.value === "" ? undefined : event.currentTarget.value,
             )}
         >
           <option value="">No group</option>
@@ -357,7 +403,34 @@ function CanvasNode({
           ×
         </Button>
       </header>
-      {node.kind === "note" && <p>{node.text}</p>}
+      {node.kind === "note" &&
+        (editingText
+          ? (
+            <textarea
+              value={draftText}
+              maxLength={2000}
+              rows={4}
+              aria-label="Note text"
+              autoFocus
+              onChange={(event) => setDraftText(event.currentTarget.value)}
+              onBlur={() => {
+                if (draftText.trim() !== "") onText(draftText);
+                else setDraftText(node.text ?? "");
+                setEditingText(false);
+              }}
+            />
+          )
+          : (
+            <p
+              onDblClick={() => {
+                setDraftText(node.text ?? "");
+                setEditingText(true);
+              }}
+              title="Double-click to edit"
+            >
+              {node.text}
+            </p>
+          ))}
       {node.kind === "viewer" && viewer !== undefined &&
         dispatch !== undefined && (
         <ChatViewerPanel

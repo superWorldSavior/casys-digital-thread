@@ -825,6 +825,26 @@ Deno.test("canvas layout rejects version, identity, and kind surprises", () => {
       }),
       "canvas node x is out of range",
     ],
+    [
+      canvasLayout({
+        nodes: [{
+          id: "n",
+          kind: "viewer",
+          x: 0,
+          y: 0,
+          z: 0,
+          toolCallId: "t",
+          done: true,
+        }],
+      }),
+      "canvas viewer nodes carry no text",
+    ],
+    [
+      canvasLayout({
+        nodes: [{ id: "n", kind: "note", x: 0, y: 0, z: 0, text: "a", done: "yes" }],
+      }),
+      "canvas note done is invalid",
+    ],
   ];
   for (const [layout, message] of cases) {
     assertThrows(() => parseChatCanvasLayout(layout), TypeError, message);

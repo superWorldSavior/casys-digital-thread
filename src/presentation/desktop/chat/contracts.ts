@@ -276,6 +276,8 @@ const CHAT_CANVAS_MAX_Z = 1_000_000;
 export interface ChatCanvasNodeDto {
   readonly id: string;
   readonly kind: "viewer" | "note";
+  /** Optional display title; defaults to the tool name or "Note". */
+  readonly title?: string;
   readonly x: number;
   readonly y: number;
   readonly width?: number;
@@ -285,6 +287,8 @@ export interface ChatCanvasNodeDto {
   readonly toolCallId?: string;
   /** Lightweight note text; note nodes only. */
   readonly text?: string;
+  /** Todo checkbox; note nodes only. */
+  readonly done?: boolean;
   readonly groupId?: string;
 }
 
@@ -1252,9 +1256,13 @@ function parseChatCanvasNode(
   if (groupId !== undefined && !groupIds.has(groupId)) {
     throw new TypeError("canvas node group is unknown");
   }
+  const title = input.title === undefined
+    ? undefined
+    : text(input.title, "canvas node title", 200);
   const base = {
     id: opaqueId(input.id, "canvas node id"),
     kind,
+    ...(title === undefined ? {} : { title }),
     x: canvasCoordinate(input.x, "canvas node x"),
     y: canvasCoordinate(input.y, "canvas node y"),
     ...optionalCanvasSize(input.width, "width", "canvas node width"),
@@ -1263,7 +1271,7 @@ function parseChatCanvasNode(
     ...(groupId === undefined ? {} : { groupId }),
   };
   if (kind === "viewer") {
-    if (input.text !== undefined) {
+    if (input.text !== undefined || input.done !== undefined) {
       throw new TypeError("canvas viewer nodes carry no text");
     }
     return Object.freeze({
@@ -1275,11 +1283,18 @@ function parseChatCanvasNode(
   if (input.toolCallId !== undefined) {
     throw new TypeError("canvas note nodes carry no tool result");
   }
+  const done = input.done === undefined ? undefined : optionalDone(input.done);
   return Object.freeze({
     ...base,
     kind: "note",
     text: boundedText(input.text, "canvas note text", CHAT_CANVAS_MAX_TEXT),
+    ...(done === undefined ? {} : { done }),
   });
+}
+
+function optionalDone(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new TypeError("canvas note done is invalid");
+  return value;
 }
 
 function canvasCoordinate(value: unknown, name: string): number {

@@ -169,3 +169,49 @@ export function removeCanvasNode(
   if (!layout.nodes.some((entry) => entry.id === id)) return layout;
   return { ...layout, nodes: layout.nodes.filter((entry) => entry.id !== id) };
 }
+
+export function applyNodeTitle(
+  layout: ChatCanvasLayoutDto,
+  id: string,
+  title: string | undefined,
+): ChatCanvasLayoutDto {
+  const node = layout.nodes.find((entry) => entry.id === id);
+  if (node === undefined) return layout;
+  const { title: _dropped, ...rest } = node;
+  return replaceNode(
+    layout,
+    id,
+    title === undefined || title === "" ? rest : { ...rest, title },
+  );
+}
+
+export function applyNoteText(
+  layout: ChatCanvasLayoutDto,
+  id: string,
+  text: string,
+): ChatCanvasLayoutDto {
+  const node = layout.nodes.find((entry) => entry.id === id);
+  if (node === undefined || node.kind !== "note" || text === "") return layout;
+  return replaceNode(layout, id, { ...node, text });
+}
+
+export function applyNoteDone(
+  layout: ChatCanvasLayoutDto,
+  id: string,
+  done: boolean,
+): ChatCanvasLayoutDto {
+  const node = layout.nodes.find((entry) => entry.id === id);
+  if (node === undefined || node.kind !== "note") return layout;
+  const { done: _dropped, ...rest } = node;
+  return replaceNode(layout, id, done ? { ...rest, done } : rest);
+}
+
+/** Display title: custom title, then tool name, then "Note". */
+export function nodeDisplayTitle(
+  node: { readonly title?: string; readonly kind: "viewer" | "note" },
+  viewerTool?: string,
+): string {
+  if (node.title !== undefined) return node.title;
+  if (node.kind === "viewer") return viewerTool ?? "Viewer";
+  return "Note";
+}
