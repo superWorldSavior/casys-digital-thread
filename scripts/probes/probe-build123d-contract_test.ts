@@ -17,10 +17,10 @@ const MANIFEST = JSON.stringify({
     }),
   ],
 });
-const HEALTH = { status: "ok", server: "mcp-build123d", version: "0.7.0" };
+const HEALTH = { status: "ok", server: "mcp-build123d", version: "0.7.1" };
 const DISCOVERY = {
   supportedVersions: ["2026-07-28"],
-  serverInfo: { name: "mcp-build123d", version: "0.7.0" },
+  serverInfo: { name: "mcp-build123d", version: "0.7.1" },
   resultType: "complete",
 };
 const RESOURCES = [
@@ -117,7 +117,7 @@ function server(
     providerIdentity: {
       ...BUILD123D_RELEASE,
       contractFingerprint:
-        "a4ac099a47eaebdc3dd41b5da1e2a6b5818835cea09c78995f791294ca3011a0",
+        "28e6c8c95c929513bcc1db87dd04bd8fb9dc98fe53c1e12dddd75bb6dc6fcd79",
     },
     expectedTools: BUILD123D_EXPECTED_TOOLS,
     expectedViews: [
@@ -159,7 +159,7 @@ function assemblyObservationTool(): Record<string, unknown> {
     outputSchema: {
       type: "object",
       properties: {
-        producer: { properties: { packageVersion: { const: "0.7.0" } } },
+        producer: { properties: { packageVersion: { const: "0.7.1" } } },
         method: { properties: { id: { const: "occt-assembly-integrity-v1" } } },
       },
     },

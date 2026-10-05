@@ -9,19 +9,19 @@ only `GET /health`, MCP `server/discover`, `tools/list`, and `resources/list` at
 code-owned loopback endpoint. It never issues `tools/call`, reads an artifact resource,
 executes CAD, or selects a provider argument.
 
-## Reviewed 0.7.0 OCI identity
+## Reviewed 0.7.1 OCI identity
 
 Both Compose services pin the dedicated multi-architecture OCI index:
 
-`ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9`
+`ghcr.io/casys-ai/mcp-build123d@sha256:6ca7396795de60db038f943cd5df8582c0e5538910d0b56da652bbd461865af4`
 
 | Field                | Reviewed value                                                            |
 | -------------------- | ------------------------------------------------------------------------- |
-| Release tag          | `v0.7.0`                                                                  |
-| Source tag commit    | `b831c16019e4e09e66c4e5567f9ee70310fb8785`                                |
+| Release tag          | `v0.7.1`                                                                  |
+| Source tag commit    | `8f05e216dfea26339dc2c50e2a48060bf8a4d51a`                                |
 | Runtime              | Deno `2.9.6`                                                              |
-| Linux AMD64 manifest | `sha256:602811b98614fdbde0722db44858d8e7595fe324a0ad6e41a407aa3a5fc24f9f` |
-| Linux ARM64 manifest | `sha256:3bcd149aea766882338564ebfb12f22727218e9419e1a4e5d122e2a14789cb9a` |
+| Linux AMD64 manifest | `sha256:91b30048f0f74b67c3c4ed3e874652db95502b6cd1db58ec0a30f35fa4546946` |
+| Linux ARM64 manifest | `sha256:66c14c537f31205043b7eca4c4dd2a27a308464e71b3a4809ff07ba9f0641e07` |
 
 The index exposes SBOM/provenance attestations. The local candidate verifies the exact
 OCI labels `source`, `revision`, and `version` alongside its cache digest; that is a
@@ -33,8 +33,8 @@ legacy `engineering-toolchain` `build123d` subcommand.
 
 ## Declared discovery surface
 
-The exact live `0.7.0` discovery/schema fingerprint is
-`sha256:a4ac099a47eaebdc3dd41b5da1e2a6b5818835cea09c78995f791294ca3011a0`. The declared
+The exact live `0.7.1` discovery/schema fingerprint is
+`sha256:28e6c8c95c929513bcc1db87dd04bd8fb9dc98fe53c1e12dddd75bb6dc6fcd79`. The declared
 names are `build123d_execute`, `build123d_export`,
 `build123d_observe_assembly_integrity`, and `build123d_project_2d`; the declared viewer
 resources are `ui://mcp-build123d/results-viewer`,

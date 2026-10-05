@@ -129,6 +129,13 @@ try {
     target.codexBinarySha256,
     "packaged Codex executable",
   );
+  const museAdapterEntry =
+    `${CHAT_RUNTIME_STAGE}/adapter/node_modules/@bex-co/muse-code-acp/dist/index.js`;
+  await assertFileDigest(
+    museAdapterEntry,
+    pins.adapterMuse.entrySha256,
+    "packaged Muse adapter entry",
+  );
   const manifest = {
     schemaVersion: "casys-chat-host-bundle/1.0",
     target: TARGET,
@@ -138,6 +145,7 @@ try {
     acpxCommit: pins.acpx.commit,
     adapterVersion: pins.adapter.version,
     codexPackageVersion: pins.adapter.codexPackageVersion,
+    museAdapterVersion: pins.adapterMuse.version,
     files: {
       node: {
         path: "node",
@@ -167,6 +175,10 @@ try {
         path: `adapter/node_modules/${target.codexPackage}/${target.codexBinaryPath}`,
         sha256: await fileSha256(codexExecutable),
       },
+      museAdapter: {
+        path: "adapter/node_modules/@bex-co/muse-code-acp/dist/index.js",
+        sha256: await fileSha256(museAdapterEntry),
+      },
     },
   };
   await Deno.writeTextFile(
@@ -177,7 +189,7 @@ try {
   console.log(
     `Prepared Chat Host acpx ${pins.acpx.version}@${
       pins.acpx.commit.slice(0, 7)
-    } with adapter ${pins.adapter.version}.`,
+    } with adapters codex ${pins.adapter.version} and muse ${pins.adapterMuse.version}.`,
   );
 } finally {
   await Deno.remove(temporaryRoot, { recursive: true });

@@ -32,7 +32,7 @@ Deno.test("Desktop 0.4 manifest pins Workbench and the separate Chat Host", () =
   });
   assertEquals(manifest.components.find((component) => component.id === "chat-host"), {
     id: "chat-host",
-    version: "0.4.0",
+    version: "0.6.0",
     delivery: "sidecar",
     lifecycle: "active",
   });

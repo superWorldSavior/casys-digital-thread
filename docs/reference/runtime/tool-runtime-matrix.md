@@ -50,8 +50,10 @@ Driver: `ToolRuntimeHost.prepare("build123d")` against the real daemon
 
 ## Fresh path, measured to the install boundary (macOS/arm64)
 
-- Engine-absent detection proven for real by hiding `docker` from `PATH`:
-  status `absent` with the app-managed recovery (not `stopped`).
+- Engine-absent detection proven at #56 by hiding `docker` from `PATH`
+  (status `absent`, app-managed recovery). Since the #54
+  `DockerResolvingRunner`, absolute managed paths are probed before PATH,
+  so PATH-hiding alone no longer yields `absent` on a standard install.
 - Declined approval returns `install-approval-required` with zero side
   effects (no download, no mount, no admin prompt).
 - Approved flow is unit-proven end to end with stubbed OS tools: pinned

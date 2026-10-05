@@ -108,6 +108,9 @@ export function readConversationMetadata(
   const mcpId = entry.mcpId === undefined
     ? undefined
     : requiredString(entry.mcpId, "conversation MCP id");
+  const agentProfileId = entry.agentProfileId === undefined
+    ? undefined
+    : profileId(entry.agentProfileId, "conversation agent profile id");
   const mcpStatus = entry.mcpStatus;
   if (mcpStatus !== undefined && mcpStatus !== "connected" && mcpStatus !== "failed") {
     throw new TypeError("conversation MCP status is invalid");
@@ -129,6 +132,7 @@ export function readConversationMetadata(
     ...(kind === undefined ? {} : { kind }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(mcpId === undefined ? {} : { mcpId }),
+    ...(agentProfileId === undefined ? {} : { agentProfileId }),
     ...(mcpStatus === undefined ? {} : { mcpStatus }),
     ...(mcpTools === undefined ? {} : { mcpTools }),
     ...(knownMessageIdsByKey === undefined ? {} : { knownMessageIdsByKey }),
@@ -154,13 +158,27 @@ export function readChatMessage(value: unknown): ChatMessageDto {
   ) {
     throw new TypeError("chat message kind is invalid");
   }
+  const agent = message.agent === undefined
+    ? undefined
+    : profileId(message.agent, "message agent");
   return Object.freeze({
     id: requiredString(message.id, "message id"),
     role,
     kind,
     text: requiredString(message.text, "message text"),
     createdAt: requiredDate(message.createdAt, "message createdAt"),
+    ...(agent === undefined ? {} : { agent }),
   });
+}
+
+/** Same rule as the chat contract's agent profile id; absent stays absent. */
+const PROFILE_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+function profileId(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.length > 48 || !PROFILE_ID.test(value)) {
+    throw new TypeError(`${name} is invalid`);
+  }
+  return value;
 }
 
 function object(value: unknown, name: string): Record<string, unknown> {

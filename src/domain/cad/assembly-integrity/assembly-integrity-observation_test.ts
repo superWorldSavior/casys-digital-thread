@@ -451,7 +451,7 @@ Deno.test("mcp-build123d adapter sends only exact STEP and normalizes factual pr
   assertEquals(result.execution.profile.fingerprint, profile.profileFingerprint);
   assertEquals(result.execution.raw.producer, {
     service: "mcp-build123d",
-    packageVersion: "0.7.0",
+    packageVersion: "0.7.1",
     tool: "build123d_observe_assembly_integrity",
     engine: { id: "cadquery-ocp", version: "7.9.3.1" },
   });
@@ -1031,7 +1031,7 @@ function rawObservedResult(
     kind: "assembly-integrity-observation",
     producer: {
       service: "mcp-build123d",
-      packageVersion: "0.7.0",
+      packageVersion: "0.7.1",
       tool: "build123d_observe_assembly_integrity",
       engine: { name: "cadquery-ocp", version: "7.9.3.1" },
     },

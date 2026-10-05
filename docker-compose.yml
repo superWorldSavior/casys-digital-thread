@@ -96,7 +96,7 @@ services:
   mcp-build123d:
     # The dedicated provider image owns its ENTRYPOINT and default HTTP CMD.
     # Do not restore the legacy engineering-toolchain `build123d` subcommand.
-    image: "${MCP_BUILD123D_IMAGE:-ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9}"
+    image: "${MCP_BUILD123D_IMAGE:-ghcr.io/casys-ai/mcp-build123d@sha256:6ca7396795de60db038f943cd5df8582c0e5538910d0b56da652bbd461865af4}"
     ports:
       - "127.0.0.1:3014:3014"
     volumes:
@@ -132,7 +132,7 @@ services:
   mcp-build123d-sandbox:
     # Same dedicated provider release, but the private volume and server-owned
     # admission boundary below remain distinct from the canonical service.
-    image: "${MCP_BUILD123D_IMAGE:-ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9}"
+    image: "${MCP_BUILD123D_IMAGE:-ghcr.io/casys-ai/mcp-build123d@sha256:6ca7396795de60db038f943cd5df8582c0e5538910d0b56da652bbd461865af4}"
     ports:
       - "127.0.0.1:3024:3014"
     volumes:

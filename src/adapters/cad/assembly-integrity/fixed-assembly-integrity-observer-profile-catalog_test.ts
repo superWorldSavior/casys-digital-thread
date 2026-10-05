@@ -4,7 +4,7 @@ import {
   FixedAssemblyIntegrityObserverProfileCatalog,
 } from "./fixed-assembly-integrity-observer-profile-catalog.ts";
 
-Deno.test("the fixed assembly-integrity observer profile requires mcp-build123d 0.7.0", async () => {
+Deno.test("the fixed assembly-integrity observer profile requires mcp-build123d 0.7.1", async () => {
   const catalog = new FixedAssemblyIntegrityObserverProfileCatalog({
     imageDigest: { algorithm: "sha256", digest: "a".repeat(64) },
   });
@@ -13,6 +13,6 @@ Deno.test("the fixed assembly-integrity observer profile requires mcp-build123d 
 
   assertEquals(profile.producer.package, {
     id: "mcp-build123d",
-    version: "0.7.0",
+    version: "0.7.1",
   });
 });

@@ -19,6 +19,12 @@
     "entrySha256": "8ef25bf9e507fb1af3625287b3fb1a9e4aaac539d44834fdef17b7d3cfbe4202",
     "codexPackageVersion": "0.144.6"
   },
+  "adapterMuse": {
+    "package": "@bex-co/muse-code-acp",
+    "version": "0.7.0",
+    "integrity": "sha512-CGjijywb3HlGiJ9nwE6ECvXr/yq8qFJc4zL52iaZlNROBtgV/N6Cihq/4t3nLU8oPbOjISp9bw2l+8wcoPX5lw==",
+    "entrySha256": "076b737c9c2889b0d76f084a9a985f1f12ec5f790ce3e275053938b90a13b5a1"
+  },
   "targets": {
     "darwin-arm64": {
       "status": "implemented-tested",

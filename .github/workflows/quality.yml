@@ -65,3 +65,7 @@ jobs:
 
       - name: Build and verify the native Workbench
         run: deno task verify:thread:presentation
+
+      - name: Verify desktop packaging pins
+        working-directory: desktop
+        run: deno task runtime:check

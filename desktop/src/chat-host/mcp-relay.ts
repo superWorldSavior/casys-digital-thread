@@ -24,11 +24,17 @@ import {
 } from "node:http";
 import { MCP_PROTOCOL_VERSION } from "../control-plane/contracts.ts";
 import { CHAT_HOST_COMPONENT_VERSION } from "../../../src/presentation/desktop/chat/contracts.ts";
+import { canonicalJson, type McpCallTap } from "../chat/mcp-tap.ts";
 
 export interface McpRelayOptions {
   /** Fixed registry upstream. The caller owns loopback validation. */
   readonly upstreamMcpUrl: string;
   readonly timeoutMs?: number;
+  /**
+   * DEV-ONLY correlation tap (#59). When present the relay records exact
+   * tools/call pairs; absent in production, where nothing is recorded.
+   */
+  readonly tap?: McpCallTap;
 }
 
 export interface McpRelay {
@@ -40,9 +46,13 @@ export interface McpRelay {
    */
   setUpstream(upstreamMcpUrl: string): void;
   close(): Promise<void>;
+  /** Echoes the options tap so the host can scope lookups per relay. */
+  readonly tap?: McpCallTap;
 }
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+/** Tap records above this never match a capturable viewer result anyway. */
+const TAP_RESULT_MAX_BYTES = 262_144;
 
 function relayMeta(): Record<string, unknown> {
   return {
@@ -63,7 +73,7 @@ export async function startMcpRelay(options: McpRelayOptions): Promise<McpRelay>
   let currentUpstream = checkedUpstream(options.upstreamMcpUrl);
 
   const server: Server = createServer((request, response) => {
-    void handleRelayRequest(request, response, currentUpstream, timeoutMs)
+    void handleRelayRequest(request, response, currentUpstream, timeoutMs, options.tap)
       .catch((error: unknown) => {
         if (response.headersSent) {
           response.destroy();
@@ -92,6 +102,7 @@ export async function startMcpRelay(options: McpRelayOptions): Promise<McpRelay>
       currentUpstream = checkedUpstream(upstreamMcpUrl);
     },
     close: () => closeServer(server),
+    ...(options.tap === undefined ? {} : { tap: options.tap }),
   };
 }
 
@@ -114,6 +125,7 @@ async function handleRelayRequest(
   response: ServerResponse,
   upstreamMcpUrl: string,
   timeoutMs: number,
+  tap: McpCallTap | undefined,
 ): Promise<void> {
   const path = (request.url ?? "").split("?")[0];
   if (path !== "/mcp") {
@@ -236,6 +248,43 @@ async function handleRelayRequest(
   if (version !== null) headers["mcp-protocol-version"] = version;
   response.writeHead(upstream.status, headers);
   response.end(body);
+  recordTap(tap, method, namedParams, body);
+}
+
+/**
+ * Records one exact tools/call pair for dev correlation. Skips silently
+ * on any shape surprise or oversize payload: the tap never breaks the
+ * relay, and unrecorded calls simply capture nothing downstream.
+ */
+function recordTap(
+  tap: McpCallTap | undefined,
+  method: string,
+  params: Record<string, unknown> | undefined,
+  body: Uint8Array,
+): void {
+  if (tap === undefined || method !== "tools/call") return;
+  const name = params?.name;
+  if (typeof name !== "string" || name.trim() === "") return;
+  if (body.byteLength > TAP_RESULT_MAX_BYTES) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+  const record = parsed as Record<string, unknown>;
+  const failed = "error" in record;
+  if (!failed && !("result" in record)) return;
+  let argsJson: string;
+  let resultJson: string;
+  try {
+    argsJson = canonicalJson(params?.arguments ?? {});
+    resultJson = canonicalJson(failed ? record.error : record.result);
+  } catch {
+    return;
+  }
+  tap.record({ tool: name, argsJson, resultJson, failed, at: Date.now() });
 }
 
 function failInvalid(

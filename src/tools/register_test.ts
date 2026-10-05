@@ -33,7 +33,7 @@ import {
   LOCAL_MODELICA_EXECUTION_IMAGE_REFERENCE,
   parseConsoleCli,
 } from "../../server.ts";
-import { MCP_BUILD123D_070_IMAGE_REFERENCE } from "../adapters/control-plane/first-party-capability-runtime-launch-groups.ts";
+import { MCP_BUILD123D_071_IMAGE_REFERENCE } from "../adapters/control-plane/first-party-capability-runtime-launch-groups.ts";
 import { LOCAL_GEOMETRY_MODULE_ASSEMBLY_DOCKER_SOURCE_IMAGE_REFERENCE } from "../adapters/control-plane/first-party-capability-runtime-identities.ts";
 import { CONSOLE_RESOURCE_URI } from "./control-plane.ts";
 import {
@@ -798,7 +798,7 @@ Deno.test(
 
       const normal = await createConsoleServer({
         manifest: assemblyIntegrityBuild123dManifest(
-          MCP_BUILD123D_070_IMAGE_REFERENCE,
+          MCP_BUILD123D_071_IMAGE_REFERENCE,
         ),
         runs: [],
         logger: () => {},
@@ -833,7 +833,7 @@ Deno.test(
         () =>
           createConsoleServer({
             manifest: assemblyIntegrityBuild123dManifest(
-              MCP_BUILD123D_070_IMAGE_REFERENCE,
+              MCP_BUILD123D_071_IMAGE_REFERENCE,
               "http://127.0.0.1:3024/mcp",
             ),
             runs: [],

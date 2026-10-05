@@ -27,7 +27,7 @@ import type {
  * generic MCP proxy: sampling, messages, links, model context, and
  * listing stay unimplemented and advertised as absent.
  *
- * Wire protocol observed on the pinned Build123d 0.7.0 viewers
+ * Wire protocol observed on the pinned Build123d 0.7.1 viewers
  * (`ui://mcp-build123d/*`): ext-apps `2026-01-26` initialize handshake,
  * `ui/notifications/tool-result` for the exact result, and the Casys
  * fingerprint port bridge for artifact bytes.

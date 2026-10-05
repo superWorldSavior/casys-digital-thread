@@ -270,6 +270,8 @@ Deno.test("startup sync reattaches persisted connections and sets demand", async
           { id: "c3", kind: "standalone" as const },
         ] as unknown as ChatSnapshotDto["conversations"],
         connectableMcps: [],
+        agentProfiles: [],
+        defaultAgentProfileId: "casys-muse",
       }),
     command: () => Promise.reject(new Error("not implemented")),
     mcpEnsure: (input) => {

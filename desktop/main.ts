@@ -257,7 +257,16 @@ function reportLifecycleReconcile(report: LifecycleReconcileReport): void {
 
 function chatHostEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const name of ["HOME", "CODEX_HOME", "OPENAI_API_KEY"] as const) {
+  for (
+    const name of [
+      "HOME",
+      "XDG_CONFIG_HOME",
+      "CODEX_HOME",
+      "OPENAI_API_KEY",
+      "META_API_KEY",
+      "MUSE_CODE_EXECUTABLE",
+    ] as const
+  ) {
     try {
       const value = Deno.env.get(name);
       if (value !== undefined) env[name] = value;

@@ -1,6 +1,4 @@
 import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1.0.14";
-import type { ChatRuntimeAdapter } from "../chat/runtime-port.ts";
-import { chatRuntimeKey } from "../chat/runtime-port.ts";
 import type { McpRelay } from "./mcp-relay.ts";
 import {
   McpAttachmentManager,
@@ -11,16 +9,12 @@ import {
 interface Harness {
   manager: McpAttachmentManager;
   relays: McpRelay[];
-  createdRuntimes: number[];
-  registered: string[];
-  unregistered: string[];
+  released: string[];
 }
 
 function harness(): Harness {
   const relays: McpRelay[] = [];
-  const createdRuntimes: number[] = [];
-  const registered: string[] = [];
-  const unregistered: string[] = [];
+  const released: string[] = [];
   let relayCount = 0;
   const manager = new McpAttachmentManager({
     connectableIds: ["build123d"],
@@ -40,14 +34,9 @@ function harness(): Harness {
       relays.push(relay);
       return Promise.resolve(relay);
     },
-    createRuntime: () => {
-      createdRuntimes.push(1);
-      return Promise.resolve({} as ChatRuntimeAdapter);
-    },
-    registerRuntime: (key) => void registered.push(key),
-    unregisterRuntime: (key) => void unregistered.push(key),
+    releaseRuntimes: (mcpId) => void released.push(mcpId),
   });
-  return { manager, relays, createdRuntimes, registered, unregistered };
+  return { manager, relays, released };
 }
 
 const FIRST = {
@@ -59,25 +48,22 @@ const SECOND = {
   healthUrl: "http://127.0.0.1:49999/health",
 };
 
-Deno.test("ensure creates one relay and runtime, then reuses them", async () => {
-  const { manager, relays, createdRuntimes, registered } = harness();
+Deno.test("ensure creates one relay, then reuses it", async () => {
+  const { manager, relays } = harness();
   await manager.ensure("build123d", FIRST);
   await manager.ensure("build123d", FIRST);
   assertEquals(relays.length, 1);
-  assertEquals(createdRuntimes.length, 1);
-  assertEquals(registered, [chatRuntimeKey("standalone", "build123d")]);
   assertEquals(manager.resolve("build123d"), FIRST);
 });
 
-Deno.test("ensure retargets the relay on binding change and keeps the runtime", async () => {
-  const { manager, relays, createdRuntimes } = harness();
+Deno.test("ensure retargets the relay on binding change", async () => {
+  const { manager, relays } = harness();
   await manager.ensure("build123d", FIRST);
   const url = manager.relayUrl("build123d");
   await manager.ensure("build123d", SECOND);
   assertEquals(relays.length, 1);
   assertEquals(manager.relayUrl("build123d"), url);
   assertEquals((relays[0] as unknown as { upstream: string }).upstream, SECOND.mcpUrl);
-  assertEquals(createdRuntimes.length, 1);
   assertEquals(manager.resolve("build123d"), SECOND);
 });
 
@@ -98,13 +84,14 @@ Deno.test("ensure refuses unknown ids and non-loopback endpoints", async () => {
   assertEquals(manager.relayUrl("build123d"), undefined);
 });
 
-Deno.test("release closes the relay and drops the runtime; absent ids pass", async () => {
-  const { manager, relays, unregistered } = harness();
+Deno.test("release closes the relay and drops runtimes; absent ids pass", async () => {
+  const { manager, relays, released } = harness();
   assertEquals(await manager.release("build123d"), "absent");
+  assertEquals(released, []);
   await manager.ensure("build123d", FIRST);
   assertEquals(await manager.release("build123d"), "released");
   assertEquals((relays[0] as unknown as { closed: boolean }).closed, true);
-  assertEquals(unregistered, [chatRuntimeKey("standalone", "build123d")]);
+  assertEquals(released, ["build123d"]);
   assertEquals(manager.resolve("build123d"), undefined);
   assertEquals(manager.relayUrl("build123d"), undefined);
   await manager.ensure("build123d", SECOND);

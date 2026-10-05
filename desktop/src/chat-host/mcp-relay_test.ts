@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "jsr:@std/assert@1.0.14";
 import { createServer, type Server } from "node:http";
 import { CHAT_HOST_COMPONENT_VERSION } from "../../../src/presentation/desktop/chat/contracts.ts";
+import { canonicalJson, createMcpCallTap } from "../chat/mcp-tap.ts";
 import { startMcpRelay } from "./mcp-relay.ts";
 
 interface CapturedUpstream {
@@ -351,6 +352,46 @@ Deno.test("relay retargets its upstream without rebinding", async () => {
       }
     });
   });
+});
+
+Deno.test("relay tap records exact tools/call pairs only", async () => {
+  await withUpstream(
+    () => ({ status: 200, body: { jsonrpc: "2.0", id: 9, result: { volume: 1000 } } }),
+    async (upstreamUrl) => {
+      const tap = createMcpCallTap();
+      const relay = await startMcpRelay({ upstreamMcpUrl: upstreamUrl, tap });
+      try {
+        assertEquals(relay.tap, tap);
+        const post = (body: unknown) =>
+          fetch(relay.url, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+        await post({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+        await post({
+          jsonrpc: "2.0",
+          id: 9,
+          method: "tools/call",
+          params: { name: "build123d_export", arguments: { b: 1, a: 2 } },
+        });
+        const match = tap.takeMatch({
+          tool: "build123d_export",
+          argsJson: canonicalJson({ a: 2, b: 1 }),
+          since: 0,
+        });
+        assert(match !== undefined);
+        assertEquals(JSON.parse(match.resultJson), { volume: 1000 });
+        assertEquals(match.failed, false);
+        assertEquals(
+          tap.takeMatch({ tool: "tools/list", argsJson: "{}", since: 0 }),
+          undefined,
+        );
+      } finally {
+        await relay.close();
+      }
+    },
+  );
 });
 
 Deno.test("relay refuses a non-loopback upstream", async () => {

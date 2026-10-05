@@ -10,6 +10,7 @@ import {
   parseChatViewerAppFetchRequest,
   parseDesktopChatBindingCommandRequest,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
+import { DEFAULT_AGENT_PROFILE_ID } from "./agent-profiles.ts";
 import type { ExternalUrlOpener } from "./external-url.ts";
 import { decodeSaveFileBytes, type DesktopChatFileSaver } from "./file-saver.ts";
 import { type ChatViewerBackend, encodeViewerBytes } from "./viewer-backend.ts";
@@ -56,6 +57,8 @@ export function registerDesktopChatBindings(
         conversations: Object.freeze([]),
         connectableMcps: Object.freeze([]),
         error: "The packaged Chat Host is unavailable.",
+        agentProfiles: Object.freeze([]),
+        defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID,
       }) satisfies ChatSnapshotDto;
     }
     return await focusedSnapshot(
@@ -282,6 +285,8 @@ async function focusedSnapshot(
     connectableMcps: snapshot.connectableMcps,
     ...(selectedConversationId === undefined ? {} : { selectedConversationId }),
     ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
+    agentProfiles: snapshot.agentProfiles,
+    defaultAgentProfileId: snapshot.defaultAgentProfileId,
   });
 }
 
@@ -340,6 +345,8 @@ function emptyFocusedSnapshot(
     conversations: Object.freeze([]),
     connectableMcps: Object.freeze([]),
     error,
+    agentProfiles: Object.freeze([]),
+    defaultAgentProfileId: DEFAULT_AGENT_PROFILE_ID,
   });
 }
 
@@ -350,6 +357,12 @@ async function authorizeProjectCommand(
 ): Promise<string | undefined> {
   // Standalone creation carries no project and needs no focus.
   if (input.command === "conversation.create" && input.projectId === undefined) {
+    return undefined;
+  }
+  // Agent registry commands carry no conversation and need no focus.
+  if (
+    input.command === "agent.set-default" || input.command === "agent.reload-profiles"
+  ) {
     return undefined;
   }
   if (input.command !== "conversation.create") {

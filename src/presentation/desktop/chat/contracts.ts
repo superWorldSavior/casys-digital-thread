@@ -7,7 +7,7 @@
 
 export const DESKTOP_CHAT_PROTOCOL = "casys-desktop-chat/1.0" as const;
 export const CHAT_HOST_COMPONENT_ID = "chat-host" as const;
-export const CHAT_HOST_COMPONENT_VERSION = "0.5.0" as const;
+export const CHAT_HOST_COMPONENT_VERSION = "0.6.0" as const;
 
 export type ChatConversationStatus =
   | "idle"
@@ -24,6 +24,12 @@ export interface ChatMessageDto {
   readonly kind: ChatMessageKind;
   readonly text: string;
   readonly createdAt: string;
+  /**
+   * Producing agent profile, present on agent-produced messages written
+   * after profiles existed. Absent on user messages (human provenance) and
+   * on legacy content (Codex era).
+   */
+  readonly agent?: string;
 }
 
 export interface ChatPermissionOptionDto {
@@ -143,10 +149,22 @@ export interface ChatConversationDto {
   readonly status: ChatConversationStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** Active agent profile; explicit per conversation, never inherited. */
+  readonly agentProfileId: string;
   readonly messages: readonly ChatMessageDto[];
   readonly mcp?: ChatConversationMcpDto;
   readonly pendingInteraction?: ChatPendingInteractionDto;
   readonly viewers: readonly ChatToolViewerDto[];
+}
+
+/** One selectable agent profile with live availability. */
+export interface ChatAgentProfileDto {
+  readonly id: string;
+  readonly displayName: string;
+  readonly available: boolean;
+  readonly version?: string;
+  readonly missingReason?: string;
+  readonly modelsExposed: boolean;
 }
 
 /**
@@ -254,6 +272,9 @@ export interface ChatSnapshotDto {
   readonly error?: string;
   /** Store retention backing saved work; absent when unbounded. */
   readonly retention?: ChatRetentionDto;
+  /** Selectable agent profiles; always present so the selector renders before auth. */
+  readonly agentProfiles: readonly ChatAgentProfileDto[];
+  readonly defaultAgentProfileId: string;
 }
 
 export type ChatCommandRequest =
@@ -338,6 +359,24 @@ export type ChatCommandRequest =
     readonly conversationId: string;
     readonly toolCallId: string;
     readonly uri: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "agent.select";
+    readonly conversationId: string;
+    readonly profileId: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "agent.set-default";
+    readonly profileId: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "agent.reload-profiles";
   };
 
 export interface ChatCommandResponse {
@@ -393,6 +432,7 @@ export interface ChatViewerAppFetchResponse {
 
 const PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const OPAQUE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/;
+const AGENT_PROFILE_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
 
 export function parseChatSnapshotRequest(value: unknown): ChatSnapshotRequest {
   const input = record(value, "snapshot request");
@@ -427,7 +467,31 @@ export function parseChatCommandRequest(value: unknown): ChatCommandRequest {
     });
   }
 
+  if (command === "agent.set-default") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      profileId: agentProfileId(input.profileId, "profileId"),
+    });
+  }
+  if (command === "agent.reload-profiles") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+    });
+  }
   const conversationId = opaqueId(input.conversationId, "conversationId");
+  if (command === "agent.select") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      conversationId,
+      profileId: agentProfileId(input.profileId, "profileId"),
+    });
+  }
   if (command === "mcp.enable") {
     return Object.freeze({
       protocol: DESKTOP_CHAT_PROTOCOL,
@@ -807,6 +871,10 @@ export function parseChatSnapshotDto(value: unknown): ChatSnapshotDto {
   const retention = input.retention === undefined
     ? undefined
     : parseRetentionDto(input.retention);
+  if (!Array.isArray(input.agentProfiles) || input.agentProfiles.length > 10) {
+    throw new TypeError("chat agent profile list is invalid");
+  }
+  const agentProfiles = Object.freeze(input.agentProfiles.map(parseAgentProfileDto));
   return Object.freeze({
     protocol: DESKTOP_CHAT_PROTOCOL,
     host,
@@ -815,6 +883,34 @@ export function parseChatSnapshotDto(value: unknown): ChatSnapshotDto {
     ...(selectedConversationId === undefined ? {} : { selectedConversationId }),
     ...(error === undefined ? {} : { error }),
     ...(retention === undefined ? {} : { retention }),
+    agentProfiles,
+    defaultAgentProfileId: agentProfileId(
+      input.defaultAgentProfileId,
+      "defaultAgentProfileId",
+    ),
+  });
+}
+
+function parseAgentProfileDto(value: unknown): ChatAgentProfileDto {
+  const input = record(value, "agent profile");
+  if (typeof input.available !== "boolean") {
+    throw new TypeError("agent profile availability is invalid");
+  }
+  if (typeof input.modelsExposed !== "boolean") {
+    throw new TypeError("agent profile models flag is invalid");
+  }
+  const version = optionalText(input.version, "version", 64);
+  const missingReason = optionalText(input.missingReason, "missingReason", 500);
+  if (input.available && missingReason !== undefined) {
+    throw new TypeError("available agent profile must not carry a missing reason");
+  }
+  return Object.freeze({
+    id: agentProfileId(input.id, "agent profile id"),
+    displayName: text(input.displayName, "displayName", 64),
+    available: input.available,
+    ...(version === undefined ? {} : { version }),
+    ...(missingReason === undefined ? {} : { missingReason }),
+    modelsExposed: input.modelsExposed,
   });
 }
 
@@ -917,6 +1013,7 @@ function parseConversationDto(value: unknown): ChatConversationDto {
     status,
     createdAt: isoDate(input.createdAt, "createdAt"),
     updatedAt: isoDate(input.updatedAt, "updatedAt"),
+    agentProfileId: agentProfileId(input.agentProfileId, "agentProfileId"),
     messages: Object.freeze(input.messages.map(parseMessageDto)),
     ...(mcp === undefined ? {} : { mcp }),
     ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
@@ -1083,6 +1180,9 @@ function parseMessageDto(value: unknown): ChatMessageDto {
     kind,
     text: boundedText(input.text, "message text", 32_000),
     createdAt: isoDate(input.createdAt, "message createdAt"),
+    ...(input.agent === undefined
+      ? {}
+      : { agent: agentProfileId(input.agent, "agent") }),
   });
 }
 
@@ -1333,6 +1433,12 @@ export function isChatOpaqueId(value: unknown): value is string {
 
 function optionalOpaqueId(value: unknown, name: string): string | undefined {
   return value === undefined ? undefined : opaqueId(value, name);
+}
+
+function agentProfileId(value: unknown, name: string): string {
+  const candidate = text(value, name, 48);
+  if (!AGENT_PROFILE_ID.test(candidate)) throw new TypeError(`${name} is invalid`);
+  return candidate;
 }
 
 const VIEWER_TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

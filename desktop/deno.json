@@ -33,10 +33,13 @@
       "env": [
         "HOME",
         "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
         "APPDATA",
         "LOCALAPPDATA",
         "CODEX_HOME",
-        "OPENAI_API_KEY"
+        "OPENAI_API_KEY",
+        "META_API_KEY",
+        "MUSE_CODE_EXECUTABLE"
       ],
       "run": [
         "casys-control-plane",

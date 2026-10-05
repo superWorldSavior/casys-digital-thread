@@ -7,6 +7,7 @@
     "node": "26.5.0"
   },
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "1.1.5"
+    "@agentclientprotocol/codex-acp": "1.1.5",
+    "@bex-co/muse-code-acp": "0.7.0"
   }
 }

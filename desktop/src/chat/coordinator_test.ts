@@ -19,8 +19,25 @@ import {
   type RuntimeTurnResult,
 } from "./runtime-port.ts";
 import { MemoryChatConversationStore, type StoredConversation } from "./store.ts";
+import {
+  canonicalJson,
+  createMcpCallTap,
+  type McpTapQuery,
+  type McpTapRecord,
+} from "./mcp-tap.ts";
 import type { ChatViewerBackend } from "./viewer-backend.ts";
 import { parseChatSnapshotDto } from "../../../src/presentation/desktop/chat/contracts.ts";
+import {
+  type AgentProfileDefinition,
+  type AgentProfileHost,
+  BUILTIN_AGENT_PROFILES,
+  CODEX_AGENT_NAME,
+  CODEX_AGENT_PROFILE_ID,
+  CODEX_AUTH_RECOVERY,
+  MUSE_AGENT_NAME,
+  MUSE_AGENT_PROFILE_ID,
+  MUSE_AUTH_RECOVERY,
+} from "./agent-profiles.ts";
 
 Deno.test("ChatCoordinator binds one project, streams sanitized events, and preserves FIFO", async () => {
   const adapter = new FakeRuntimeAdapter();
@@ -69,6 +86,42 @@ Deno.test("ChatCoordinator binds one project, streams sanitized events, and pres
     adapter.ensureInputs[0].sessionOptions.systemPrompt,
     /exclusively bound to projectId coffee-machine/,
   );
+  await coordinator.stop();
+});
+
+Deno.test("bex pseudo-tool housekeeping never lands in the transcript", async () => {
+  const adapter = new FakeRuntimeAdapter();
+  const coordinator = await coordinatorWith(adapter);
+  const conversationId = await createConversation(coordinator, "coffee-machine");
+
+  await coordinator.command(send("r1", conversationId, "Build it"));
+  await until(() => adapter.turns.length === 1);
+  adapter.turns[0].events.push({
+    type: "tool_call",
+    text: "reminderChild: inProgress (in_progress): Reminder child session",
+    title: "reminderChild: inProgress",
+    toolCallId: "ee959abe-c75f-4c67-96ec-700175d5381f",
+    status: "in_progress",
+    kind: "other",
+  });
+  adapter.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__build123d_execute (completed)",
+    title: "mcp__build123d__build123d_execute",
+    toolCallId: "call_real",
+    status: "completed",
+    kind: "other",
+  });
+  adapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+
+  const conversation = coordinator.snapshot(conversationId).conversations[0];
+  assertEquals(conversation.messages.map((message) => message.text), [
+    "Build it",
+    "mcp__build123d__build123d_execute — completed",
+  ]);
   await coordinator.stop();
 });
 
@@ -1018,9 +1071,11 @@ Deno.test("mcp.enable fails closed without an assigned endpoint", async () => {
   await coordinator.stop();
 });
 
-Deno.test("late-registered runtimes serve turns; unregistered ones refuse", async () => {
+Deno.test("late-registered runtimes serve turns; refused factories fail turns", async () => {
   const pool = standalonePool({ probeTools: ["t_one"] });
+  const agents = new FakeAgentProfileHost();
   const coordinator = await coordinatorWith(pool.standalone, {
+    agents,
     runtimes: new Map([
       [chatRuntimeKey("project"), pool.project],
       [chatRuntimeKey("standalone"), pool.standalone],
@@ -1047,10 +1102,15 @@ Deno.test("late-registered runtimes serve turns; unregistered ones refuse", asyn
     coordinator.snapshot(conversationId).conversations[0].status === "idle"
   );
   coordinator.unregisterRuntime(chatRuntimeKey("standalone", "build123d"));
+  agents.ensureFailures.set(CODEX_AGENT_PROFILE_ID, "mcp runtime is not configured");
   await coordinator.command(send("r3", conversationId, "Run after release."));
   await until(() =>
     coordinator.snapshot(conversationId).conversations[0].status === "failed"
   );
+  const texts = coordinator.snapshot(conversationId).conversations[0].messages.map(
+    (message) => message.text,
+  );
+  assertEquals(texts[texts.length - 1], "mcp runtime is not configured");
   await coordinator.stop();
 });
 
@@ -1155,6 +1215,452 @@ Deno.test("failed turn output reseeds into the switched session", async () => {
   await until(() =>
     coordinator.snapshot(conversationId).conversations[0].status === "idle"
   );
+  await coordinator.stop();
+});
+
+Deno.test("failed turn with ACP authRequired appends sign-in recovery", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("r1", conversationId, "Hello."));
+  await until(() => pool.standalone.turns.length === 1);
+  pool.standalone.turns[0].finish({
+    status: "failed",
+    error: { message: "Authentication required: no valid session" },
+  });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "failed"
+  );
+  const texts = coordinator.snapshot(conversationId).conversations[0].messages
+    .map((message) => message.text);
+  assertEquals(texts, [
+    "Hello.",
+    "Authentication required: no valid session",
+    CODEX_AUTH_RECOVERY,
+  ]);
+  await coordinator.stop();
+});
+
+Deno.test("failed turn with other errors appends no recovery", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("r1", conversationId, "Hello."));
+  await until(() => pool.standalone.turns.length === 1);
+  pool.standalone.turns[0].finish({
+    status: "failed",
+    error: { message: "Authentication requiredish" },
+  });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "failed"
+  );
+  const texts = coordinator.snapshot(conversationId).conversations[0].messages
+    .map((message) => message.text);
+  assertEquals(texts, ["Hello.", "Authentication requiredish"]);
+  await coordinator.stop();
+});
+
+Deno.test("new conversations use the default profile with namespaced keys", async () => {
+  const pool = standalonePool({
+    agents: new FakeAgentProfileHost({ defaultId: MUSE_AGENT_PROFILE_ID }),
+  });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].agentProfileId,
+    MUSE_AGENT_PROFILE_ID,
+  );
+  await coordinator.command(send("r1", conversationId, "Hello."));
+  const museAdapter = pool.agents.created.get(`standalone@${MUSE_AGENT_PROFILE_ID}`)!;
+  await until(() => museAdapter.turns.length === 1);
+  assertEquals(museAdapter.ensureInputs[0].agent, MUSE_AGENT_NAME);
+  assert(museAdapter.ensureInputs[0].sessionKey.includes("/agent/casys-muse"));
+  assertEquals(pool.standalone.turns.length, 0);
+  museAdapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  await coordinator.stop();
+});
+
+Deno.test("agent.select switches profile preserving history without replay", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("r1", conversationId, "Remember REDWOOD."));
+  await until(() => pool.standalone.turns.length === 1);
+  pool.standalone.turns[0].events.push({ type: "text_delta", text: "Noted REDWOOD." });
+  pool.standalone.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const selected = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-1",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assert(selected.ok);
+  const after = coordinator.snapshot(conversationId).conversations[0];
+  assertEquals(after.agentProfileId, MUSE_AGENT_PROFILE_ID);
+  assert(after.messages.some((message) => message.text.includes("Switched to Muse")));
+  await coordinator.command(send("r2", conversationId, "What did I ask to remember?"));
+  const museAdapter = pool.agents.created.get(`standalone@${MUSE_AGENT_PROFILE_ID}`)!;
+  await until(() => museAdapter.turns.length === 1);
+  assert(museAdapter.turns[0].text.includes("REDWOOD"), "seed misses prior context");
+  assertMatch(museAdapter.turns[0].text, /do not re-execute/);
+  assertEquals(pool.standalone.turns.length, 1, "codex turn replayed");
+  museAdapter.turns[0].events.push({ type: "text_delta", text: "REDWOOD it is." });
+  museAdapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const tagged = coordinator.snapshot(conversationId).conversations[0].messages.map(
+    (message) => [message.text, message.agent] as const,
+  );
+  assertEquals(tagged, [
+    ["Remember REDWOOD.", undefined],
+    ["Noted REDWOOD.", CODEX_AGENT_PROFILE_ID],
+    [tagged[2][0], MUSE_AGENT_PROFILE_ID],
+    ["What did I ask to remember?", undefined],
+    ["REDWOOD it is.", MUSE_AGENT_PROFILE_ID],
+  ]);
+  assert(tagged[2][0].includes("Switched to Muse"));
+  await coordinator.stop();
+});
+
+Deno.test("agent.select refuses during an active turn or pending permission", async () => {
+  const adapter = new FakeRuntimeAdapter();
+  const coordinator = await coordinatorWith(adapter);
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("r1", conversationId, "First."));
+  await until(() => adapter.turns.length === 1);
+  const refused = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-busy",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assertEquals(refused.ok, false);
+  adapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  await coordinator.command(send("r2", conversationId, "Second."));
+  await until(() => adapter.turns.length === 2);
+  const permission = coordinator.requestPermission({
+    sessionId: "agent-session-1",
+    inferredKind: "read",
+    raw: {
+      toolCall: { toolCallId: "tool-1", title: "Read", kind: "read" },
+      options: [{ name: "Allow once", kind: "allow_once" }],
+    },
+  }, new AbortController().signal);
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].pendingInteraction !==
+      undefined
+  );
+  const refusedPending = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-pending",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assertEquals(refusedPending.ok, false);
+  const pending = coordinator.snapshot(conversationId).conversations[0]
+    .pendingInteraction!;
+  if (pending.type !== "permission") throw new Error("missing permission");
+  const resolved = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "perm-1",
+    command: "permission.resolve",
+    conversationId,
+    correlationId: pending.correlationId,
+    decision: "allow_once",
+  });
+  assert(resolved.ok);
+  assertEquals(await permission, { outcome: "allow_once" });
+  adapter.turns[1].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const selected = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-ok",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assert(selected.ok);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].agentProfileId,
+    MUSE_AGENT_PROFILE_ID,
+  );
+  await coordinator.stop();
+});
+
+Deno.test("agent.select to an unknown profile fails without mutation", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const before = coordinator.snapshot(conversationId).conversations[0];
+  const selected = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-unknown",
+    command: "agent.select",
+    conversationId,
+    profileId: "nope",
+  });
+  assertEquals(selected.ok, false);
+  const after = coordinator.snapshot(conversationId).conversations[0];
+  assertEquals(after.agentProfileId, before.agentProfileId);
+  assertEquals(after.messages.length, before.messages.length);
+  await coordinator.stop();
+});
+
+Deno.test("agent.select with a failing factory keeps the old profile explicitly", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  pool.agents.ensureFailures.set(MUSE_AGENT_PROFILE_ID, "No Muse executable found");
+  const selected = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-fail",
+    command: "agent.select",
+    conversationId,
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assertEquals(selected.ok, false);
+  const after = coordinator.snapshot(conversationId).conversations[0];
+  assertEquals(after.agentProfileId, CODEX_AGENT_PROFILE_ID);
+  const last = after.messages[after.messages.length - 1].text;
+  assert(last.includes("No Muse executable found"));
+  assert(last.includes("keeps running on Codex"));
+  await coordinator.command(send("r1", conversationId, "Still here."));
+  await until(() => pool.standalone.turns.length === 1);
+  pool.standalone.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  await coordinator.stop();
+});
+
+Deno.test("agent.set-default persists without touching conversations", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const set = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "def-1",
+    command: "agent.set-default",
+    profileId: MUSE_AGENT_PROFILE_ID,
+  });
+  assert(set.ok);
+  assertEquals(pool.agents.savedDefaults, [MUSE_AGENT_PROFILE_ID]);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].agentProfileId,
+    CODEX_AGENT_PROFILE_ID,
+  );
+  const freshId = await createStandaloneConversation(coordinator);
+  assertEquals(
+    coordinator.snapshot(freshId).conversations[0].agentProfileId,
+    MUSE_AGENT_PROFILE_ID,
+  );
+  const unknown = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "def-2",
+    command: "agent.set-default",
+    profileId: "nope",
+  });
+  assertEquals(unknown.ok, false);
+  await coordinator.stop();
+});
+
+Deno.test("agent.reload-profiles surfaces host errors", async () => {
+  const pool = standalonePool();
+  const coordinator = await pool.coordinator();
+  const ok = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "rel-1",
+    command: "agent.reload-profiles",
+  });
+  assert(ok.ok);
+  pool.agents.reloadOutcome = {
+    ok: false,
+    error: "agent profiles file is not valid JSON",
+  };
+  const failed = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "rel-2",
+    command: "agent.reload-profiles",
+  });
+  assertEquals(failed.ok, false);
+  assertEquals(pool.agents.reloadCalls, 2);
+  await coordinator.stop();
+});
+
+Deno.test("reload remaps conversations on removed profiles to legacy", async () => {
+  const custom: AgentProfileDefinition = {
+    id: "lab",
+    displayName: "Lab",
+    agentName: "lab",
+    builtin: null,
+    launch: { kind: "command", path: "/usr/local/bin/lab-acp", args: [] },
+    authRecovery: "Sign in, then retry.",
+    modelsExposed: false,
+  };
+  const agents = new FakeAgentProfileHost({
+    definitions: [...BUILTIN_AGENT_PROFILES, custom],
+  });
+  const pool = standalonePool({ agents });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const selected = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "sel-lab",
+    command: "agent.select",
+    conversationId,
+    profileId: "lab",
+  });
+  assert(selected.ok);
+  await coordinator.command(send("r1", conversationId, "Hello lab."));
+  const labAdapter = agents.created.get("standalone@lab")!;
+  await until(() => labAdapter.turns.length === 1);
+  labAdapter.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  agents.nextDefinitions = BUILTIN_AGENT_PROFILES;
+  const reloaded = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "rel-lab",
+    command: "agent.reload-profiles",
+  });
+  assert(reloaded.ok);
+  const after = coordinator.snapshot(conversationId).conversations[0];
+  assertEquals(after.agentProfileId, CODEX_AGENT_PROFILE_ID);
+  assert(
+    after.messages.some((message) => message.text.includes("no longer available")),
+  );
+  await coordinator.command(send("r2", conversationId, "Hello again."));
+  await until(() => pool.standalone.turns.length === 1);
+  assertEquals(labAdapter.turns.length, 1, "turn landed on the orphaned runtime");
+  pool.standalone.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  await coordinator.stop();
+});
+
+Deno.test("restore remaps unknown stored profiles once with a note", async () => {
+  const store = new MemoryChatConversationStore();
+  await store.save([{
+    id: "conversation:old",
+    kind: "standalone",
+    agentProfileId: "deleted-x",
+    sessionKey: "casys-desktop-exclusive/standalone/conversation:old/agent/deleted-x",
+    title: "Old",
+    status: "idle",
+    createdAt: "2026-09-27T00:00:00.000Z",
+    updatedAt: "2026-09-27T00:00:00.000Z",
+    messages: [],
+  }]);
+  const first = await coordinatorWith(new FakeRuntimeAdapter(), { store });
+  const restored = first.snapshot("conversation:old").conversations[0];
+  assertEquals(restored.agentProfileId, CODEX_AGENT_PROFILE_ID);
+  assertEquals(restored.messages.length, 1);
+  assert(restored.messages[0].text.includes("no longer available"));
+  await first.stop();
+  const second = await coordinatorWith(new FakeRuntimeAdapter(), { store });
+  assertEquals(
+    second.snapshot("conversation:old").conversations[0].messages.length,
+    1,
+    "remap note duplicated",
+  );
+  await second.stop();
+});
+
+Deno.test("restore keeps legacy conversations on bare codex keys", async () => {
+  const store = new MemoryChatConversationStore();
+  const bareKey = "casys-desktop-exclusive/standalone/conversation:legacy";
+  await store.save([{
+    id: "conversation:legacy",
+    kind: "standalone",
+    sessionKey: bareKey,
+    title: "Legacy",
+    status: "idle",
+    createdAt: "2026-09-27T00:00:00.000Z",
+    updatedAt: "2026-09-27T00:00:00.000Z",
+    messages: [],
+  }]);
+  const pool = standalonePool({ store });
+  const coordinator = await pool.coordinator();
+  assertEquals(
+    coordinator.snapshot("conversation:legacy").conversations[0].agentProfileId,
+    CODEX_AGENT_PROFILE_ID,
+  );
+  await coordinator.command(send("r1", "conversation:legacy", "Hello again."));
+  await until(() => pool.standalone.turns.length === 1);
+  assertEquals(pool.standalone.ensureInputs[0].agent, CODEX_AGENT_NAME);
+  assertEquals(pool.standalone.ensureInputs[0].sessionKey, bareKey);
+  pool.standalone.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot("conversation:legacy").conversations[0].status === "idle"
+  );
+  await coordinator.stop();
+});
+
+Deno.test("close releases only the unused mcp runtime", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const enabled = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "enable-1",
+    command: "mcp.enable",
+    conversationId,
+    mcpId: "build123d",
+  });
+  assert(enabled.ok);
+  assertEquals(pool.mcp.closed, false);
+  const closed = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "close-1",
+    command: "conversation.close",
+    conversationId,
+  });
+  assert(closed.ok);
+  assertEquals(pool.mcp.closed, true);
+  assertEquals(pool.standalone.closed, false);
+  await coordinator.stop();
+});
+
+Deno.test("muse turn auth failure appends the muse recovery", async () => {
+  const pool = standalonePool({
+    agents: new FakeAgentProfileHost({ defaultId: MUSE_AGENT_PROFILE_ID }),
+  });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await coordinator.command(send("r1", conversationId, "Hello."));
+  const museAdapter = pool.agents.created.get(`standalone@${MUSE_AGENT_PROFILE_ID}`)!;
+  await until(() => museAdapter.turns.length === 1);
+  museAdapter.turns[0].finish({
+    status: "failed",
+    error: { message: "Authentication required: not logged in" },
+  });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "failed"
+  );
+  const texts = coordinator.snapshot(conversationId).conversations[0].messages
+    .map((message) => message.text);
+  assertEquals(texts, [
+    "Hello.",
+    "Authentication required: not logged in",
+    MUSE_AUTH_RECOVERY,
+  ]);
   await coordinator.stop();
 });
 
@@ -1691,10 +2197,13 @@ function standalonePool(options: {
   probeError?: string;
   store?: MemoryChatConversationStore;
   viewerBackend?: ChatViewerBackend;
+  agents?: AgentProfileHost;
+  findMcpTapCall?: (mcpId: string, query: McpTapQuery) => McpTapRecord | undefined;
 } = {}): {
   readonly project: FakeRuntimeAdapter;
   readonly standalone: FakeRuntimeAdapter;
   readonly mcp: FakeRuntimeAdapter;
+  readonly agents: FakeAgentProfileHost;
   probeTools: readonly string[] | undefined;
   probeError: string | undefined;
   probeCalls: number;
@@ -1703,15 +2212,31 @@ function standalonePool(options: {
   const project = new FakeRuntimeAdapter("project");
   const standalone = new FakeRuntimeAdapter("standalone");
   const mcp = new FakeRuntimeAdapter("mcp");
+  const agents = options.agents instanceof FakeAgentProfileHost
+    ? options.agents
+    : new FakeAgentProfileHost();
+  // The production factory caches one adapter per key; seed the fake the
+  // same way so release/re-ensure round-trips keep adapter identity.
+  agents.created.set(`${chatRuntimeKey("project")}@${CODEX_AGENT_PROFILE_ID}`, project);
+  agents.created.set(
+    `${chatRuntimeKey("standalone")}@${CODEX_AGENT_PROFILE_ID}`,
+    standalone,
+  );
+  agents.created.set(
+    `${chatRuntimeKey("standalone", "build123d")}@${CODEX_AGENT_PROFILE_ID}`,
+    mcp,
+  );
   const state = {
     project,
     standalone,
     mcp,
+    agents,
     probeTools: options.probeTools,
     probeError: options.probeError,
     probeCalls: 0,
     coordinator(): Promise<ChatCoordinator> {
       return coordinatorWith(project, {
+        agents,
         runtimes: new Map([
           [chatRuntimeKey("project"), project],
           [chatRuntimeKey("standalone"), standalone],
@@ -1735,10 +2260,82 @@ function standalonePool(options: {
         ...(options.viewerBackend === undefined
           ? {}
           : { viewerBackend: options.viewerBackend }),
+        ...(options.findMcpTapCall === undefined
+          ? {}
+          : { findMcpTapCall: options.findMcpTapCall }),
       });
     },
   };
   return state;
+}
+
+class FakeAgentProfileHost implements AgentProfileHost {
+  definitions: readonly AgentProfileDefinition[];
+  readonly created = new Map<string, FakeRuntimeAdapter>();
+  readonly savedDefaults: string[] = [];
+  nextDefinitions?: readonly AgentProfileDefinition[];
+  reloadCalls = 0;
+  reloadOutcome: { readonly ok: true } | {
+    readonly ok: false;
+    readonly error: string;
+  } = {
+    ok: true,
+  };
+  ensureFailures = new Map<string, string>();
+  #defaultId: string;
+
+  constructor(options: {
+    definitions?: readonly AgentProfileDefinition[];
+    defaultId?: string;
+  } = {}) {
+    this.definitions = options.definitions ?? BUILTIN_AGENT_PROFILES;
+    this.#defaultId = options.defaultId ?? CODEX_AGENT_PROFILE_ID;
+  }
+
+  defaultProfileId(): string {
+    return this.#defaultId;
+  }
+
+  statusOf(profileId: string) {
+    const definition = this.definitions.find((entry) => entry.id === profileId)!;
+    const failure = this.ensureFailures.get(profileId);
+    return {
+      definition,
+      available: failure === undefined,
+      ...(failure === undefined ? { version: "test-1" } : { missingReason: failure }),
+    };
+  }
+
+  ensureRuntime(
+    profileId: string,
+    baseRuntimeKey: string,
+  ): Promise<ChatRuntimeAdapter> {
+    const failure = this.ensureFailures.get(profileId);
+    if (failure !== undefined) return Promise.reject(new Error(failure));
+    const key = `${baseRuntimeKey}@${profileId}`;
+    let adapter = this.created.get(key);
+    if (adapter === undefined) {
+      adapter = new FakeRuntimeAdapter(`factory:${key}`);
+      this.created.set(key, adapter);
+    }
+    return Promise.resolve(adapter);
+  }
+
+  saveDefault(profileId: string): Promise<void> {
+    this.savedDefaults.push(profileId);
+    this.#defaultId = profileId;
+    return Promise.resolve();
+  }
+
+  reload(): Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: string }
+  > {
+    this.reloadCalls += 1;
+    if (this.reloadOutcome.ok && this.nextDefinitions !== undefined) {
+      this.definitions = this.nextDefinitions;
+    }
+    return Promise.resolve(this.reloadOutcome);
+  }
 }
 
 function coordinatorWith(
@@ -1752,10 +2349,13 @@ function coordinatorWith(
     ) => { readonly mcpUrl: string; readonly healthUrl: string } | undefined;
     store?: MemoryChatConversationStore;
     viewerBackend?: ChatViewerBackend;
+    agents?: AgentProfileHost;
+    findMcpTapCall?: (mcpId: string, query: McpTapQuery) => McpTapRecord | undefined;
   } = {},
 ): Promise<ChatCoordinator> {
   let sequence = 0;
   return ChatCoordinator.create({
+    agents: options.agents ?? new FakeAgentProfileHost(),
     runtimes: options.runtimes ??
       new Map([
         [chatRuntimeKey("project"), adapter],
@@ -1775,6 +2375,9 @@ function coordinatorWith(
     ...(options.resolveMcpEndpoint === undefined
       ? {}
       : { resolveMcpEndpoint: options.resolveMcpEndpoint }),
+    ...(options.findMcpTapCall === undefined
+      ? {}
+      : { findMcpTapCall: options.findMcpTapCall }),
     workspaceRoot: "/private/chat-workspace",
     now: () => new Date(1_700_000_000_000 + sequence++),
     newId: () => String(sequence++),
@@ -1997,6 +2600,226 @@ function viewerToolResult(volume: number): Record<string, unknown> {
     _meta: { ui: { resourceUri: VIEWER_APP_URI } },
   };
 }
+
+Deno.test("dev tap attributes an output-less namespaced tool event", async () => {
+  const backend = new FakeViewerBackend();
+  const tap = createMcpCallTap();
+  const pool = standalonePool({
+    probeTools: ["t_one"],
+    viewerBackend: backend,
+    findMcpTapCall: (_mcpId, query) => tap.takeMatch(query),
+  });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  // Relay-side key order differs from the event: canonicalization matches.
+  tap.record({
+    tool: "t_one",
+    argsJson: canonicalJson({ b: 1, a: 2 }),
+    resultJson: canonicalJson(viewerToolResult(1000)),
+    failed: false,
+    at: 1_700_000_000_000 + 50_000,
+  });
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-tap",
+    status: "completed",
+    rawInput: { a: 2, b: 1 },
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const viewers = coordinator.snapshot(conversationId).conversations[0].viewers;
+  assertEquals(viewers.length, 1);
+  assertEquals(viewers[0]?.toolCallId, "tool-call-tap");
+  assertEquals(viewers[0]?.tool, "t_one");
+  assertEquals(viewers[0]?.appUri, VIEWER_APP_URI);
+  await coordinator.stop();
+});
+
+Deno.test("dev tap skips on ambiguity and foreign titles", async () => {
+  const tap = createMcpCallTap();
+  const pool = standalonePool({
+    probeTools: ["t_one"],
+    findMcpTapCall: (_mcpId, query) => tap.takeMatch(query),
+  });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  const at = 1_700_000_000_000 + 50_000;
+  tap.record({
+    tool: "t_one",
+    argsJson: canonicalJson({}),
+    resultJson: "{}",
+    failed: false,
+    at,
+  });
+  tap.record({
+    tool: "t_one",
+    argsJson: canonicalJson({}),
+    resultJson: "{}",
+    failed: false,
+    at,
+  });
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-ambiguous",
+    status: "completed",
+    rawInput: {},
+  });
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__foreign__t_one (completed)",
+    title: "mcp__foreign__t_one",
+    toolCallId: "tool-call-foreign",
+    status: "completed",
+    rawInput: {},
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].viewers,
+    [],
+  );
+  await coordinator.stop();
+});
+
+Deno.test("claude-style tool events capture the string result without a tap", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-claude",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+    rawOutput: JSON.stringify(viewerToolResult(1000)),
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  const viewers = coordinator.snapshot(conversationId).conversations[0].viewers;
+  assertEquals(viewers.length, 1);
+  assertEquals(viewers[0]?.toolCallId, "tool-call-claude");
+  assertEquals(viewers[0]?.tool, "t_one");
+  assertEquals(viewers[0]?.appUri, VIEWER_APP_URI);
+  await coordinator.stop();
+});
+
+Deno.test("claude-style capture accepts a single text block array", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-claude-blocks",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+    rawOutput: [{ type: "text", text: JSON.stringify(viewerToolResult(1000)) }],
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].viewers.length,
+    1,
+  );
+  await coordinator.stop();
+});
+
+Deno.test("claude-style capture ignores foreign and unparsable shapes", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__foreign__t_one (completed)",
+    title: "mcp__foreign__t_one",
+    toolCallId: "tool-call-foreign",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+    rawOutput: JSON.stringify(viewerToolResult(1000)),
+  });
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-garbage",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+    rawOutput: "not json",
+  });
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-scalar",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+    rawOutput: JSON.stringify(42),
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].viewers,
+    [],
+  );
+  await coordinator.stop();
+});
+
+Deno.test("output-less tool events capture nothing without a tap", async () => {
+  const pool = standalonePool({ probeTools: ["t_one"] });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await coordinator.command(send("r1", conversationId, "Model a box"));
+  await until(() => pool.mcp.turns.length === 1);
+  pool.mcp.turns[0].events.push({
+    type: "tool_call",
+    text: "mcp__build123d__t_one (completed)",
+    title: "mcp__build123d__t_one",
+    toolCallId: "tool-call-plain",
+    status: "completed",
+    rawInput: { script: "result = 1" },
+  });
+  pool.mcp.turns[0].finish({ status: "completed" });
+  await until(() =>
+    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].viewers,
+    [],
+  );
+  await coordinator.stop();
+});
 
 Deno.test("viewer captures the exact tool result and opens the expected App", async () => {
   const backend = new FakeViewerBackend();

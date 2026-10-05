@@ -6,6 +6,7 @@ import { Button, buttonVariants } from "../ui/button.tsx";
 import { cn } from "../lib/utils.ts";
 import { Notice } from "../ui/notice.tsx";
 import {
+  type ChatAgentProfileDto,
   type ChatCommandResponse,
   type ChatConnectableMcpDto,
   type ChatConversationDto,
@@ -354,6 +355,14 @@ export function DesktopChat(
           </ArkDialog.Description>
         </div>
         <div className="desktop-chat-head-actions">
+          <AgentSelector
+            profiles={snapshot?.agentProfiles ?? []}
+            defaultProfileId={snapshot?.defaultAgentProfileId}
+            activeProfileId={selected?.agentProfileId}
+            conversationId={selected?.id}
+            interactive={nativeChatAvailable}
+            command={command}
+          />
           <Button
             type="button"
             variant={showCatalogue ? "secondary" : "ghost"}
@@ -488,6 +497,73 @@ export function DesktopChat(
         </ArkDialog.Positioner>
       </aside>
     </ArkDialog.Root>
+  );
+}
+
+function AgentSelector({
+  profiles,
+  defaultProfileId,
+  activeProfileId,
+  conversationId,
+  interactive,
+  command,
+}: {
+  readonly profiles: readonly ChatAgentProfileDto[];
+  readonly defaultProfileId?: string;
+  readonly activeProfileId?: string;
+  readonly conversationId?: string;
+  readonly interactive: boolean;
+  readonly command: (
+    request: DesktopChatBindingCommandRequest,
+  ) => Promise<ChatCommandResponse | undefined>;
+}): JSX.Element | null {
+  if (profiles.length === 0) return null;
+  const value = activeProfileId ?? defaultProfileId ?? "";
+  return (
+    <label className="desktop-chat-agent" title="Agent for this conversation (default when none is open)">
+      Agent
+      <select
+        aria-label="Agent"
+        disabled={!interactive}
+        value={value}
+        onChange={(event) => {
+          const profileId = event.currentTarget.value;
+          if (profileId === "" || profileId === activeProfileId) return;
+          if (conversationId !== undefined) {
+            void command({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              command: "agent.select",
+              conversationId,
+              profileId,
+            });
+          } else if (profileId !== defaultProfileId) {
+            void command({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              command: "agent.set-default",
+              profileId,
+            });
+          }
+        }}
+      >
+        {profiles.map((profile) => (
+          <option
+            key={profile.id}
+            value={profile.id}
+            disabled={!profile.available}
+            title={profile.available
+              ? (profile.version ? `Version ${profile.version}` : profile.displayName)
+              : (profile.missingReason ?? "Unavailable")}
+          >
+            {profile.displayName}
+            {profile.available && profile.version ? ` ${profile.version}` : ""}
+            {!profile.available ? " (unavailable)" : ""}
+            {profile.id === defaultProfileId ? " • default" : ""}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

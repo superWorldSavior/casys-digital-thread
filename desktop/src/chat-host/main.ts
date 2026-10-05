@@ -3,17 +3,21 @@ import { readFileSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import pins from "../../chat-runtime/pins.json" with { type: "json" };
+import { MUSE_AGENT_PROFILE_ID } from "../chat/agent-profiles.ts";
 import { ChatCoordinator } from "../chat/coordinator.ts";
 import { connectableMcpServers, probeChatMcpServer } from "../chat/mcp-servers.ts";
 import { createRegistryViewerBackend } from "../chat/viewer-backend.ts";
-import { chatRuntimeKey } from "../chat/runtime-port.ts";
+
 import {
   CHAT_HOST_COMPONENT_VERSION,
   parseChatCommandRequest,
   parseChatSnapshotRequest,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
+import { builtinAdapterEntry } from "./agent-host.ts";
+import { AgentRuntimeFactory } from "./agent-runtime-factory.ts";
+import { createMcpCallTap, type McpTapQuery } from "../chat/mcp-tap.ts";
 import {
   McpAttachmentManager,
   parseMcpEnsurePayload,
@@ -39,19 +43,14 @@ const bundleManifest = JSON.parse(
 ) as Record<string, unknown>;
 const runtimeTarget = parseImplementedTarget(bundleManifest.target);
 const targetArtifacts = resolveTargetArtifacts(runtimeTarget);
-const adapterEntry = realpathSync(
-  join(
-    runtimeRoot,
-    "adapter",
-    "node_modules",
-    "@agentclientprotocol",
-    "codex-acp",
-    "dist",
-    "index.js",
-  ),
+const codexAdapterEntry = realpathSync(
+  join(runtimeRoot, builtinAdapterEntry("bundled-codex")),
+);
+const museAdapterEntry = realpathSync(
+  join(runtimeRoot, builtinAdapterEntry("bundled-muse")),
 );
 const acpxPackage = realpathSync(join(runtimeRoot, "acpx"));
-assertRuntimePins(acpxPackage, adapterEntry);
+assertRuntimePins(acpxPackage, codexAdapterEntry, museAdapterEntry);
 await mkdir(join(dataRoot, "workspace"), { recursive: true, mode: 0o700 });
 
 const mcpServers = connectableMcpServers();
@@ -64,39 +63,51 @@ const mcpServers = connectableMcpServers();
 const projectRelay = await startMcpRelay({
   upstreamMcpUrl: "http://127.0.0.1:3020/mcp",
 });
-const sharedRuntimeOptions = {
+// DEV-ONLY (#59): relay correlation taps attribute provider responses to
+// output-less tool events. Production never sets this variable, so the
+// packaged app records nothing and the limitation stands there.
+const devRelayTap = process.env.CASYS_DEV_RELAY_TAP === "1";
+if (devRelayTap) console.error("[chat-host] DEV relay tap enabled");
+// One runtime per agent profile x MCP set: the factory creates them
+// lazily; the legacy Codex profile keeps the historical session stores
+// so native sessions resume, every other profile is namespaced (#58).
+const { factory: agentFactory, profilesError } = await AgentRuntimeFactory.create({
   dataRoot,
   workspaceRoot: join(dataRoot, "workspace"),
-  acpxRuntimeUrl: new URL("./acpx/dist/runtime.js", import.meta.url).href,
-  adapterEntry,
+  runtimeRoot,
   nodeExecutable: process.execPath,
-};
-// One runtime per MCP set: the project runtime keeps the fixed Digital
-// Thread server (and its existing session store), standalone starts with
-// zero MCPs, and each attached MCP owns a lazily created runtime + store.
-const runtimes = new Map([
-  [
-    chatRuntimeKey("project"),
-    await createPinnedRuntimeAdapter({
-      ...sharedRuntimeOptions,
-      mcpServers: [{ name: "casys-digital-thread", url: projectRelay.url }],
-      sessionStoreDir: "acpx-sessions",
-    }),
-  ],
-  [
-    chatRuntimeKey("standalone"),
-    await createPinnedRuntimeAdapter({
-      ...sharedRuntimeOptions,
-      mcpServers: [],
-      sessionStoreDir: "acpx-sessions-standalone",
-    }),
-  ],
-]);
+  acpxRuntimeUrl: pathToFileURL(join(acpxPackage, "dist", "runtime.js")).href,
+  codexVersion: pins.adapter.codexPackageVersion,
+  projectRelayUrl: projectRelay.url,
+  appEnv: process.env,
+  mcpDisplayName: (mcpId) =>
+    mcpServers.find((server) => server.id === mcpId)?.displayName ?? mcpId,
+  relayUrl: (mcpId) => attachments.relayUrl(mcpId),
+  createAdapter: (options) => createPinnedRuntimeAdapter(options),
+});
+if (profilesError !== undefined) {
+  console.error(`[chat-host] custom agent profiles ignored: ${profilesError}`);
+}
+{
+  const muse = agentFactory.statusOf(MUSE_AGENT_PROFILE_ID);
+  console.error(
+    muse.available
+      ? `[chat-host] muse resolved: ${muse.version ?? "unknown version"}`
+      : `[chat-host] muse unresolved: ${muse.missingReason ?? "unknown reason"}`,
+  );
+}
 const coordinator = await ChatCoordinator.create({
-  runtimes,
+  agents: agentFactory,
+  runtimes: new Map(),
   mcpServers,
   probeMcp: (server) => probeChatMcpServer(server),
   resolveMcpEndpoint: (mcpId) => attachments.resolve(mcpId),
+  ...(devRelayTap
+    ? {
+      findMcpTapCall: (mcpId: string, query: McpTapQuery) =>
+        attachments.relayTap(mcpId)?.takeMatch(query),
+    }
+    : {}),
   viewerBackend: createRegistryViewerBackend({
     servers: mcpServers,
     resolveEndpoint: (server) => attachments.resolve(server),
@@ -106,15 +117,16 @@ const coordinator = await ChatCoordinator.create({
 });
 const attachments = new McpAttachmentManager({
   connectableIds: mcpServers.map((server) => server.id),
-  startRelay: (upstreamMcpUrl) => startMcpRelay({ upstreamMcpUrl }),
-  createRuntime: (mcpId, relayUrl) =>
-    createPinnedRuntimeAdapter({
-      ...sharedRuntimeOptions,
-      mcpServers: [{ name: mcpId, url: relayUrl }],
-      sessionStoreDir: `acpx-sessions-standalone-${mcpId}`,
+  startRelay: (upstreamMcpUrl) =>
+    startMcpRelay({
+      upstreamMcpUrl,
+      ...(devRelayTap ? { tap: createMcpCallTap() } : {}),
     }),
-  registerRuntime: (key, adapter) => coordinator.registerRuntime(key, adapter),
-  unregisterRuntime: (key) => coordinator.unregisterRuntime(key),
+  releaseRuntimes: (mcpId) => {
+    void agentFactory.releaseStandalone(mcpId).then((keys) => {
+      for (const key of keys) coordinator.unregisterRuntime(key);
+    });
+  },
 });
 
 write({
@@ -124,6 +136,7 @@ write({
   chatHostVersion: CHAT_HOST_COMPONENT_VERSION,
   acpxCommit: pins.acpx.commit,
   adapterVersion: pins.adapter.version,
+  museAdapterVersion: pins.adapterMuse.version,
   nodeVersion: process.versions.node,
   target: runtimeTarget,
 });
@@ -238,7 +251,11 @@ function isExactAbsolutePath(
     !path.split("/").some((part) => part === ".." || part === ".");
 }
 
-function assertRuntimePins(acpxPackage: string, adapter: string): void {
+function assertRuntimePins(
+  acpxPackage: string,
+  adapter: string,
+  museAdapter: string,
+): void {
   if (process.versions.node !== pins.nodeVersion) {
     throw new Error("packaged Node runtime version mismatch");
   }
@@ -255,6 +272,9 @@ function assertRuntimePins(acpxPackage: string, adapter: string): void {
   }
   if (fileSha256(adapter) !== pins.adapter.entrySha256) {
     throw new Error("packaged ACP adapter digest mismatch");
+  }
+  if (fileSha256(museAdapter) !== pins.adapterMuse.entrySha256) {
+    throw new Error("packaged Muse ACP adapter digest mismatch");
   }
   const codexBinary = join(
     runtimeRoot,

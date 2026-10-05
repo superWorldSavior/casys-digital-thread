@@ -63,9 +63,9 @@
         }
       ],
       "distribution": {
-        "version": "0.7.0",
-        "release": "v0.7.0",
-        "revision": "b831c16019e4e09e66c4e5567f9ee70310fb8785"
+        "version": "0.7.1",
+        "release": "v0.7.1",
+        "revision": "8f05e216dfea26339dc2c50e2a48060bf8a4d51a"
       },
       "platforms": [
         {

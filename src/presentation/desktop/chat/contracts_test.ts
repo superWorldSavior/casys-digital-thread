@@ -26,8 +26,22 @@ function conversation(
     status: "idle",
     createdAt: "2026-09-27T00:00:00.000Z",
     updatedAt: "2026-09-27T00:00:00.000Z",
+    agentProfileId: "casys-muse",
     messages: [],
     viewers: [],
+    ...overrides,
+  };
+}
+
+function agentProfile(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "casys-muse",
+    displayName: "Muse",
+    available: true,
+    version: "1.4.0",
+    modelsExposed: false,
     ...overrides,
   };
 }
@@ -40,6 +54,17 @@ function snapshotWith(
     host: "ready",
     conversations: [...conversations],
     connectableMcps: [],
+    agentProfiles: [
+      agentProfile(),
+      agentProfile({
+        id: "casys-codex",
+        displayName: "Codex",
+        available: false,
+        version: undefined,
+        missingReason: "Codex is not signed in.",
+      }),
+    ],
+    defaultAgentProfileId: "casys-muse",
   };
 }
 
@@ -91,6 +116,103 @@ Deno.test("snapshot rejects a projectId outside the closed identifier contract",
       ),
     TypeError,
     "projectId must be an explicit Casys project identifier",
+  );
+});
+
+Deno.test("snapshot carries agent profiles, default, and message provenance", () => {
+  const parsed = parseChatSnapshotDto(
+    snapshotWith(
+      conversation({
+        agentProfileId: "casys-codex",
+        messages: [
+          {
+            id: "m-1",
+            role: "user",
+            kind: "text",
+            text: "Hi",
+            createdAt: "2026-09-27T00:00:00.000Z",
+          },
+          {
+            id: "m-2",
+            role: "assistant",
+            kind: "text",
+            text: "Hello",
+            createdAt: "2026-09-27T00:00:01.000Z",
+            agent: "casys-codex",
+          },
+        ],
+      }),
+    ),
+  );
+  assertEquals(parsed.defaultAgentProfileId, "casys-muse");
+  assertEquals(parsed.agentProfiles.length, 2);
+  assertEquals(parsed.agentProfiles[0]?.id, "casys-muse");
+  assertEquals(parsed.agentProfiles[1]?.missingReason, "Codex is not signed in.");
+  assertEquals(parsed.conversations[0]?.agentProfileId, "casys-codex");
+  assertEquals(parsed.conversations[0]?.messages[0]?.agent, undefined);
+  assertEquals(parsed.conversations[0]?.messages[1]?.agent, "casys-codex");
+});
+
+Deno.test("snapshot refuses malformed agent profile shapes", () => {
+  assertThrows(
+    () => parseChatSnapshotDto(snapshotWith(conversation({ agentProfileId: "Nope!" }))),
+    TypeError,
+    "agentProfileId is invalid",
+  );
+  assertThrows(
+    () =>
+      parseChatSnapshotDto({
+        ...snapshotWith(conversation()),
+        agentProfiles: [agentProfile({ available: true, missingReason: "nope" })],
+      }),
+    TypeError,
+    "available agent profile must not carry a missing reason",
+  );
+  assertThrows(
+    () =>
+      parseChatSnapshotDto({
+        ...snapshotWith(conversation()),
+        agentProfiles: [],
+        defaultAgentProfileId: "not a profile!",
+      }),
+    TypeError,
+    "defaultAgentProfileId is invalid",
+  );
+});
+
+Deno.test("agent commands parse profile ids strictly", () => {
+  const select = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-agent-1",
+    command: "agent.select",
+    conversationId: "conv-1",
+    profileId: "casys-muse",
+  });
+  assertEquals(select.command, "agent.select");
+  const setDefault = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-agent-2",
+    command: "agent.set-default",
+    profileId: "custom-x",
+  });
+  assertEquals(setDefault.command, "agent.set-default");
+  const reload = parseChatCommandRequest({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "r-agent-3",
+    command: "agent.reload-profiles",
+  });
+  assertEquals(reload.command, "agent.reload-profiles");
+  assertThrows(
+    () =>
+      parseChatCommandRequest({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        requestId: "r-agent-4",
+        command: "agent.select",
+        conversationId: "conv-1",
+        profileId: "Not A Profile!",
+      }),
+    TypeError,
+    "profileId is invalid",
   );
 });
 

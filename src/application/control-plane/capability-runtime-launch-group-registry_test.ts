@@ -47,7 +47,7 @@ Deno.test("Build123d launch groups pin the reviewed image, private loopback port
     assertEquals(group.version, "1.0.0");
     assertEquals(
       group.materials[0]?.imageReference,
-      "ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9",
+      "ghcr.io/casys-ai/mcp-build123d@sha256:6ca7396795de60db038f943cd5df8582c0e5538910d0b56da652bbd461865af4",
     );
     assertEquals(service.ports, [requirement.port]);
     assertEquals(service.volumes, [requirement.volume]);

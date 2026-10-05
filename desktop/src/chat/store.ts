@@ -53,6 +53,11 @@ export interface StoredConversation {
    */
   readonly kind?: "project" | "standalone";
   readonly projectId?: string;
+  /**
+   * Active agent profile. Absent on entries written before profiles
+   * existed; readers treat a missing id as the legacy Codex profile.
+   */
+  readonly agentProfileId?: string;
   /** Active standalone MCP attachment, if any. */
   readonly mcpId?: string;
   readonly mcpStatus?: "connected" | "failed";

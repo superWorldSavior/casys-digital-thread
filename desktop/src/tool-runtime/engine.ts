@@ -82,7 +82,7 @@ export async function detectToolRuntimeEngine(
     return {
       status: "absent",
       detail:
-        "No docker binary was found on PATH; the app-managed install path applies.",
+        "No docker binary was found in the managed locations or on PATH; the app-managed install path applies.",
       binaryPresent: false,
       daemonReachable: false,
       reasons: [],

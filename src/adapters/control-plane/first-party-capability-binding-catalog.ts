@@ -59,7 +59,7 @@ import {
   firstPartyChronoLaunchGroupReference,
   firstPartyDfmLaunchGroupReference,
   firstPartySysonLaunchGroupReference,
-  MCP_BUILD123D_070_IMAGE_REFERENCE,
+  MCP_BUILD123D_071_IMAGE_REFERENCE,
   MCP_SYSON_IMAGE_REFERENCE,
   POSTGRES_IMAGE_REFERENCE,
   SYSON_IMAGE_REFERENCE,
@@ -136,7 +136,7 @@ export async function createFirstPartyCapabilityRuntimeCatalog(): Promise<
     unit("casys.mcp-build123d-sandbox", [
       composeMaterial(
         "mcp-build123d-sandbox-image",
-        MCP_BUILD123D_070_IMAGE_REFERENCE,
+        MCP_BUILD123D_071_IMAGE_REFERENCE,
         ["linux/amd64", "linux/arm64"],
         "mcp-build123d-sandbox",
         "loopback-only",
@@ -147,11 +147,11 @@ export async function createFirstPartyCapabilityRuntimeCatalog(): Promise<
         "reviewed",
         build123dSandboxLaunchGroup,
       ),
-    ], "0.7.0"),
+    ], "0.7.1"),
     unit("casys.mcp-build123d-observation", [
       composeMaterial(
         "mcp-build123d-observation-image",
-        MCP_BUILD123D_070_IMAGE_REFERENCE,
+        MCP_BUILD123D_071_IMAGE_REFERENCE,
         ["linux/amd64", "linux/arm64"],
         "mcp-build123d",
         "loopback-only",
@@ -162,7 +162,7 @@ export async function createFirstPartyCapabilityRuntimeCatalog(): Promise<
         "reviewed",
         build123dObservationLaunchGroup,
       ),
-    ], "0.7.0"),
+    ], "0.7.1"),
     unit("casys.build123d-isolated-worker", [
       microvmMaterial(
         "build123d-isolated-worker-image",

@@ -1,8 +1,6 @@
 import rawManifest from "../../component-manifest.json" with { type: "json" };
 import denoConfig from "../../deno.json" with { type: "json" };
 import {
-  CONTROL_PLANE_LOOPBACK_HOST,
-  CONTROL_PLANE_PORT,
   CONTROL_PLANE_PRODUCT_VERSION,
   CONTROL_PLANE_SERVER_VERSION,
 } from "../control-plane/contracts.ts";
@@ -13,11 +11,7 @@ import {
 import { MACOS_EXTERNAL_URL_OPENER_NAME } from "../chat/external-url.ts";
 import { PACKAGED_CHAT_HOST_NAME } from "../chat-host/path.ts";
 import { validateComponentManifest } from "../host/mod.ts";
-import {
-  WORKBENCH_HOSTNAME,
-  WORKBENCH_PORT,
-  WORKBENCH_VERSION,
-} from "../workbench/contracts.ts";
+import { WORKBENCH_VERSION } from "../workbench/contracts.ts";
 import {
   PACKAGED_CONTROL_PLANE_HELPER_NAME,
   PACKAGED_WORKBENCH_HELPER_NAME,
@@ -93,33 +87,43 @@ const expectedEnvironment = [
   "CODEX_HOME",
   "HOME",
   "LOCALAPPDATA",
+  "META_API_KEY",
+  "MUSE_CODE_EXECUTABLE",
   "OPENAI_API_KEY",
+  "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
 ];
 const actualEnvironment = [...denoConfig.permissions.desktop.env].sort();
 const actualRun = [...denoConfig.permissions.desktop.run].sort();
 const actualNet = [...denoConfig.permissions.desktop.net].sort();
 const permissionKeys = Object.keys(denoConfig.permissions.desktop).sort();
+// Closed desktop-host grant set. Docker paths are the #54 distribution grant
+// exercised by the #56 app-managed tool runtime; full loopback is the #57
+// ephemeral provider-port grant. Any change must update deno.json,
+// deno-tasks_test.ts, this gate, and the README boundary together.
+const expectedRun = [
+  PACKAGED_CHAT_HOST_NAME,
+  PACKAGED_CONTROL_PLANE_HELPER_NAME,
+  PACKAGED_WORKBENCH_HELPER_NAME,
+  MACOS_EXTERNAL_URL_OPENER_NAME,
+  "docker",
+  "/opt/homebrew/bin/docker",
+  "/usr/local/bin/docker",
+  "/usr/bin/docker",
+  "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+].sort();
 if (
   JSON.stringify(actualEnvironment) !== JSON.stringify(expectedEnvironment) ||
-  JSON.stringify(actualRun) !==
-    JSON.stringify([
-      PACKAGED_CHAT_HOST_NAME,
-      PACKAGED_CONTROL_PLANE_HELPER_NAME,
-      PACKAGED_WORKBENCH_HELPER_NAME,
-      MACOS_EXTERNAL_URL_OPENER_NAME,
-    ].sort()) ||
-  JSON.stringify(actualNet) !==
-    JSON.stringify([
-      `${CONTROL_PLANE_LOOPBACK_HOST}:${CONTROL_PLANE_PORT}`,
-      `${WORKBENCH_HOSTNAME}:${WORKBENCH_PORT}`,
-    ].sort()) ||
+  JSON.stringify(actualRun) !== JSON.stringify(expectedRun) ||
+  JSON.stringify(actualNet) !== JSON.stringify(["127.0.0.1"]) ||
   JSON.stringify(permissionKeys) !==
-    JSON.stringify(["env", "import", "net", "run"]) ||
-  denoConfig.permissions.desktop.import !== false
+    JSON.stringify(["env", "import", "net", "read", "run", "write"]) ||
+  denoConfig.permissions.desktop.import !== false ||
+  denoConfig.permissions.desktop.read !== true ||
+  denoConfig.permissions.desktop.write !== true
 ) {
   throw new Error(
-    "Cannot build Desktop: runtime permissions must contain only named layout/agent env reads, the three packaged helper basenames, the external URL opener, their canonical loopback endpoints, and denied remote imports.",
+    "Cannot build Desktop: runtime permissions must contain only named layout/agent env reads, the three packaged helper basenames, the external URL opener, the five managed docker paths, full loopback for ephemeral provider ports, host read/write, and denied remote imports.",
   );
 }
 

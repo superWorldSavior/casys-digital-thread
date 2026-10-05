@@ -22,8 +22,10 @@ export interface PinnedRuntimeOptions {
   readonly dataRoot: string;
   readonly workspaceRoot: string;
   readonly acpxRuntimeUrl: string;
-  readonly adapterEntry: string;
-  readonly nodeExecutable: string;
+  /** ACP registry key for this runtime's agent. */
+  readonly agentName: string;
+  /** Literal adapter argv (command + args); no shell, no lookup. */
+  readonly agentArgv: readonly string[];
   /**
    * MCP servers fixed for this runtime instance. Empty for a standalone
    * runtime with zero engineering MCPs; acpx offers no per-session MCP
@@ -47,7 +49,7 @@ export async function createPinnedRuntimeAdapter(
     }),
     agentRegistry: acpx.createAgentRegistry({
       overrides: {
-        "casys-codex": [options.nodeExecutable, options.adapterEntry],
+        [options.agentName]: [...options.agentArgv],
       },
     }),
     mcpServers: options.mcpServers.map((server) => ({

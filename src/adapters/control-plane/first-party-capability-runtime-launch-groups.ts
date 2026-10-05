@@ -20,8 +20,8 @@ export const SYSON_IMAGE_REFERENCE =
   "ghcr.io/casys-ai/syson@sha256:d372ae26e5d32e5c599fa7c1599d42c73cf9a54e101cfe6f77175f313d7d84e9" as const;
 export const MCP_SYSON_IMAGE_REFERENCE =
   "ghcr.io/casys-ai/mcp-syson@sha256:df00198b1fd33504871e93834bc6616bcfcc09a85d4cd8f6348434c38c09c0ab" as const;
-export const MCP_BUILD123D_070_IMAGE_REFERENCE =
-  "ghcr.io/casys-ai/mcp-build123d@sha256:aa9ae1264294ddb47e3686c3a2b46c79cbc3971a8ec5cee6cee79bf6a7bcc5a9" as const;
+export const MCP_BUILD123D_071_IMAGE_REFERENCE =
+  "ghcr.io/casys-ai/mcp-build123d@sha256:6ca7396795de60db038f943cd5df8582c0e5538910d0b56da652bbd461865af4" as const;
 
 /**
  * SysON is only exposed through mcp-syson on 3009. The UI's historical 8180
@@ -428,7 +428,7 @@ async function build123dLaunchGroup(input: {
   const composeContent = deterministicJson({
     services: {
       [input.serviceName]: {
-        image: MCP_BUILD123D_070_IMAGE_REFERENCE,
+        image: MCP_BUILD123D_071_IMAGE_REFERENCE,
         ports: [`127.0.0.1:${input.port}:3014`],
         volumes: [`${input.volume}:/exports`],
         // Exact limits from the reviewed provider Compose contract. The image
@@ -459,7 +459,7 @@ async function build123dLaunchGroup(input: {
       material(
         input.unitId,
         input.materialId,
-        MCP_BUILD123D_070_IMAGE_REFERENCE,
+        MCP_BUILD123D_071_IMAGE_REFERENCE,
         input.serviceName,
         input.projectName,
       ),

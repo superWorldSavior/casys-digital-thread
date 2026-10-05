@@ -37,6 +37,8 @@ Deno.test("Desktop registers only four narrow, versioned Chat bindings", async (
       conversations: [],
       connectableMcps: [],
       error: "The packaged Chat Host is unavailable.",
+      agentProfiles: [],
+      defaultAgentProfileId: "casys-muse",
     },
   );
   assertEquals(
@@ -652,6 +654,14 @@ function snapshot(...conversations: readonly ChatConversationDto[]) {
     ...(conversations[0] === undefined
       ? {}
       : { selectedConversationId: conversations[0].id }),
+    agentProfiles: Object.freeze([{
+      id: "casys-muse",
+      displayName: "Muse",
+      available: true,
+      version: "test-1",
+      modelsExposed: false,
+    }]),
+    defaultAgentProfileId: "casys-muse",
   });
 }
 
@@ -668,6 +678,7 @@ function conversation(
     status: "idle",
     createdAt: "2026-08-23T00:00:00.000Z",
     updatedAt: "2026-08-23T00:00:00.000Z",
+    agentProfileId: "casys-muse",
     viewers: Object.freeze([]),
     messages: Object.freeze(
       message === undefined ? [] : [{
@@ -692,6 +703,7 @@ function standaloneConversation(
     status: "idle",
     createdAt: "2026-08-23T00:00:00.000Z",
     updatedAt: "2026-08-23T00:00:00.000Z",
+    agentProfileId: "casys-muse",
     viewers: Object.freeze([]),
     messages: Object.freeze(
       message === undefined ? [] : [{

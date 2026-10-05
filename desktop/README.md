@@ -14,9 +14,9 @@ packager.
 
 ## Current behavior
 
-- Product and Chat Host `0.4.0`, Workbench `0.3.0`, Deno and Deno Desktop runtime
-  `2.9.2`, and control plane server `0.2.0` are exact pins. The WebView engine remains
-  OS-owned and is labelled that way in the manifest.
+- Product `0.4.0` and Chat Host `0.6.0`, Workbench `0.3.0`, Deno and Deno Desktop
+  runtime `2.9.2`, and control plane server `0.2.0` are exact pins. The WebView engine
+  remains OS-owned and is labelled that way in the manifest.
 - Before any helper process is considered, Desktop validates the embedded manifest,
   observed Deno/Desktop/product versions, selected finite platform application-support
   layout, product identifier, and exact `active` + `sidecar` declarations.
@@ -28,7 +28,7 @@ packager.
   roots from that profile with native separators; neither renderer nor helper chooses a
   project root.
 - Chat starts only after the validated product bootstrap is live and the manifest
-  declares exact active sidecar `chat-host@0.4.0`. Production then resolves only the
+  declares exact active sidecar `chat-host@0.6.0`. Production then resolves only the
   target-owned `casys-chat-host` package layout. A recovery-required bootstrap, wrong
   pin, unsupported target, missing digest, or lookalike executable produces no Chat Host
   child.
@@ -70,10 +70,12 @@ packager.
 ## Runtime boundary
 
 The Desktop host reads only its named layout and agent-credential environment entries,
-runs only packaged `casys-control-plane`, `casys-workbench`, `casys-chat-host`, and the
-platform external-URL opener basenames, and reaches only `127.0.0.1:3020` plus the
-private Workbench BFF on `127.0.0.1:5176`. It receives no filesystem, FFI, or general
-subprocess permission; runtime remote imports are denied.
+runs only packaged `casys-control-plane`, `casys-workbench`, `casys-chat-host`, the
+platform external-URL opener, and the five managed `docker` paths, and reaches only
+loopback `127.0.0.1` (control plane, Workbench BFF, and ephemeral app-managed provider
+ports). It retains host filesystem read and write; FFI and general subprocess permission
+are denied and runtime remote imports are denied. Narrowing the host filesystem grant
+remains hardening debt.
 
 The separately compiled helper receives read/write access only to the product root
 below. In the currently proved macOS distribution it is resolved against the validated

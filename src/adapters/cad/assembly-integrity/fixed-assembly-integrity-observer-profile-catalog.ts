@@ -86,7 +86,7 @@ export class FixedAssemblyIntegrityObserverProfileCatalog
       producer: {
         rawSchemaVersion: "build123d-assembly-integrity-observation/1.0",
         engine: { id: "cadquery-ocp", version: "7.9.3.1" },
-        package: { id: "mcp-build123d", version: "0.7.0" },
+        package: { id: "mcp-build123d", version: "0.7.1" },
       },
       configuredRuntime: { kind: "image-digest", imageDigest },
       maximumStepBytes: ASSEMBLY_INTEGRITY_MAXIMUM_STEP_BYTES,

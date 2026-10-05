@@ -38,12 +38,22 @@ Deno.test("Chat Host store round-trips standalone kind, MCP, and viewer archive"
     const entry: StoredConversation = {
       id: "conversation:solo",
       kind: "standalone",
+      agentProfileId: "casys-muse",
       sessionKey: "casys-desktop-exclusive/standalone/conversation:solo",
       title: "Standalone",
       status: "idle",
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
-      messages: [],
+      messages: [
+        {
+          id: "message-1",
+          role: "assistant",
+          kind: "text",
+          text: "volume 1000",
+          createdAt: now.toISOString(),
+          agent: "casys-muse",
+        },
+      ],
       mcpId: "build123d",
       mcpStatus: "connected",
       mcpTools: ["build123d_export"],
@@ -78,6 +88,8 @@ Deno.test("Chat Host store round-trips standalone kind, MCP, and viewer archive"
     const loaded = await store.load();
     assertEquals(loaded.length, 1);
     assertEquals(loaded[0].kind, "standalone");
+    assertEquals(loaded[0].agentProfileId, "casys-muse");
+    assertEquals(loaded[0].messages[0].agent, "casys-muse");
     assertEquals(loaded[0].mcpId, "build123d");
     assertEquals(loaded[0].mcpTools, ["build123d_export"]);
     assertEquals(loaded[0].toolResults?.length, 1);
