@@ -118,12 +118,12 @@ task-specific how-to guide state the exact boundary for each path.
 
 Engineering provider servers are maintained in separate repositories and run here from
 reviewed images. Related public building blocks include
-[`mcp-syson`](https://github.com/Casys-AI/mcp-syson),
-[`mcp-build123d`](https://github.com/Casys-AI/mcp-build123d),
-[`mcp-calculix`](https://github.com/Casys-AI/mcp-calculix),
-[`mcp-modelica`](https://github.com/Casys-AI/mcp-modelica),
-[`mcp-spice`](https://github.com/Casys-AI/mcp-spice), and
-[`constraint-solver`](https://github.com/Casys-AI/constraint-solver).
+[`mcp-syson`](https://github.com/superWorldSavior/mcp-syson),
+[`mcp-build123d`](https://github.com/superWorldSavior/mcp-build123d),
+[`mcp-calculix`](https://github.com/superWorldSavior/mcp-calculix),
+[`mcp-modelica`](https://github.com/superWorldSavior/mcp-modelica),
+[`mcp-spice`](https://github.com/superWorldSavior/mcp-spice), and
+[`constraint-solver`](https://github.com/superWorldSavior/constraint-solver).
 
 ## Contributing and security
 
