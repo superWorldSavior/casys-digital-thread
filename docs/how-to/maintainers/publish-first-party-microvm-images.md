@@ -11,11 +11,10 @@ Do not run this path to repair a local cache miss. Local acquisition still obser
 exact Microsandbox target and, on miss, reconstructs the in-repo Dockerfile as a
 candidate recipe.
 
-The workflow belongs on the reviewed GitHub publication mirror, not an internal
-development remote. Before creating or pushing a release tag, establish that mirror and
-complete the public repository preflight. A candidate pushed to a private GHCR package
-remains private; do not use this procedure as a shortcut around the separate visibility
-and anonymous-pull review.
+The workflow requires `superWorldSavior/casys-digital-thread` with repository ID
+`1316957248`. Before creating or pushing a release tag, complete the public repository
+preflight. A candidate pushed to a private GHCR package remains private; do not use this
+procedure as a shortcut around the separate visibility and anonymous-pull review.
 
 ## 1. Review the planning matrix
 
@@ -29,8 +28,13 @@ The command prints compact JSON on stdout. It performs no network, Docker, or fi
 writes. Its versioned contract requires exactly five unique physical images and five
 logical targets; Modelica qualified-kit and admitted-source bindings share one
 installable atom and therefore one entry. Confirm lowercase
-`ghcr.io/casys-ai/casys-digital-thread-<physicalImageId>` names and no `latest` or
-digest publication identity.
+`ghcr.io/superworldsavior/casys-digital-thread-<physicalImageId>` names and no `latest`
+or digest publication identity.
+
+The personal namespace is for future candidates. Existing Casys digest-pinned
+acquisition sources, Microsandbox runtime pins and historical receipts stay unchanged.
+Moving the publication name does not qualify an equivalent image or establish an
+anonymous pull from a new package.
 
 ## 2. Invoke the workflow on an exact git tag
 

@@ -174,6 +174,48 @@ Deno.test("candidate import accepts equal OCI and Microsandbox hash text while p
   );
 });
 
+Deno.test("historical candidate import pulls and saves the original Casys digest under the personal matrix", async () => {
+  const { receipt, indexDocument, matrix } = await historicalFixtures();
+  const ports = fakePorts({ receipt, indexDocument });
+  const record = await importFirstPartyMicrosandboxImageCandidate({
+    receipt,
+    matrix,
+    ports,
+  });
+  assertEquals(ports.pulls, [receipt.candidate.oci.platformManifestReference]);
+  assertEquals(ports.saves, ports.pulls);
+  assertEquals(ports.pulls[0]!.startsWith("ghcr.io/casys-ai/"), true);
+  assertEquals(
+    deterministicJson(record.sourceReceipt.receipt),
+    deterministicJson(receipt),
+  );
+  assertEquals(record.candidate.oci, receipt.candidate.oci);
+  assertNeverTouchesCatalogPin(ports, receipt);
+});
+
+Deno.test("historical candidate import rejects a personal repository digest even with the same digest text", async () => {
+  const { receipt, indexDocument, matrix } = await historicalFixtures();
+  const ports = fakePorts({
+    receipt,
+    indexDocument,
+    docker: {
+      ...dockerInspectJson(receipt),
+      RepoDigests: [receipt.candidate.oci.platformManifestReference.replace(
+        "ghcr.io/casys-ai/",
+        "ghcr.io/superworldsavior/",
+      )],
+    },
+  });
+  await assertRejects(
+    () => importFirstPartyMicrosandboxImageCandidate({ receipt, matrix, ports }),
+    Error,
+    "not the exact linux/arm64 first-party candidate",
+  );
+  assertEquals(ports.loads, []);
+  assertEquals(ports.saves, []);
+  assertNeverTouchesCatalogPin(ports, receipt);
+});
+
 Deno.test("candidate import is deterministic for the same receipt and observations", async () => {
   const { receipt, indexDocument, matrix } = await fixtures();
   const first = await importFirstPartyMicrosandboxImageCandidate({
@@ -1014,6 +1056,34 @@ async function boundReceipt(input: {
     receipt,
     matrix,
   );
+}
+
+async function historicalFixtures() {
+  const { receipt: personal, indexDocument, matrix } = await fixtures();
+  const historical = {
+    ...matrix,
+    images: matrix.images.map((image) => ({
+      ...image,
+      imageName: image.imageName.replace(
+        "ghcr.io/superworldsavior/",
+        "ghcr.io/casys-ai/",
+      ),
+    })),
+  };
+  const receipt = buildFirstPartyMicrosandboxImageCandidateReceipt({
+    matrix: historical,
+    matrixFingerprint: await fingerprintFirstPartyMicrosandboxImageDistributionMatrix(
+      historical,
+    ),
+    physicalImageId: personal.candidate.physicalImageId,
+    ociIndexDigest: personal.candidate.oci.indexDigest,
+    platformManifestDigest: personal.candidate.oci.platformManifestDigest,
+    locatorTag: personal.candidate.locatorTag,
+    gitSha: personal.candidate.git.sha,
+    gitTag: personal.candidate.git.tag,
+    buildMetadata: personal.candidate.build.metadata,
+  });
+  return { receipt, indexDocument, matrix };
 }
 
 async function currentMatrix() {

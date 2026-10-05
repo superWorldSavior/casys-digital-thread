@@ -35,12 +35,12 @@ Deno.test("candidate receipt writer binds the full matrix and exact Buildx outpu
     assertEquals(receipt.candidate.physicalImageId, "ngspice-worker");
     assertEquals(
       receipt.candidate.oci.indexReference,
-      "ghcr.io/casys-ai/casys-digital-thread-ngspice-worker@" +
+      "ghcr.io/superworldsavior/casys-digital-thread-ngspice-worker@" +
         OCI_INDEX_DIGEST,
     );
     assertEquals(
       receipt.candidate.oci.platformManifestReference,
-      "ghcr.io/casys-ai/casys-digital-thread-ngspice-worker@" +
+      "ghcr.io/superworldsavior/casys-digital-thread-ngspice-worker@" +
         PLATFORM_MANIFEST_DIGEST,
     );
     assertEquals(receipt.inputMatrix.images.length, 5);

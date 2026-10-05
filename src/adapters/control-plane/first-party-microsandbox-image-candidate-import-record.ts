@@ -22,9 +22,9 @@ import {
   parseFirstPartyMicrosandboxImageCandidateReceipt,
 } from "./first-party-microsandbox-image-candidate-receipt.ts";
 import {
+  assertFirstPartyMicrosandboxCandidateImageName,
   assertFirstPartyMicrosandboxImageDistributionContract,
   FIRST_PARTY_MICROSANDBOX_IMAGE_DISTRIBUTION_MATRIX_SCHEMA,
-  firstPartyMicrosandboxGhcrImageName,
   firstPartyMicrosandboxGhcrPackageName,
   type FirstPartyMicrosandboxImageDistributionEntry,
   type FirstPartyMicrosandboxImageDistributionMatrix,
@@ -336,14 +336,11 @@ function rebuildImportRecord(input: {
   assertGitSha(receipt.candidate.git.sha);
   assertGitTag(receipt.candidate.git.tag);
   assertLocatorTag(receipt.candidate.locatorTag, receipt.candidate.git.sha);
-  const imageName = firstPartyMicrosandboxGhcrImageName(
-    firstPartyMicrosandboxGhcrPackageName(receipt.candidate.physicalImageId),
+  const imageName = receipt.candidate.imageName;
+  assertFirstPartyMicrosandboxCandidateImageName(
+    imageName,
+    receipt.candidate.physicalImageId,
   );
-  if (receipt.candidate.imageName !== imageName) {
-    throw new TypeError(
-      "Candidate import record imageName is not the current matrix entry.",
-    );
-  }
   const candidateReference = firstPartyMicrosandboxImageCandidateReference(
     receipt.candidate.physicalImageId,
     input.microsandboxManifestDigest,
@@ -405,19 +402,18 @@ function assertRecordMatchesSelectedMatrixEntry(
   record: FirstPartyMicrosandboxImageCandidateImportRecord,
   selected: FirstPartyMicrosandboxImageDistributionEntry,
 ): void {
-  if (record.candidate.imageName !== selected.imageName) {
-    throw new TypeError(
-      "Candidate import record imageName is not the current matrix entry.",
-    );
-  }
+  // The preserved source receipt has already been bound to this current entry.
+  // Keep the original repository alongside its original OCI digests, not a retag.
+  const imageName = record.candidate.imageName;
+  assertFirstPartyMicrosandboxCandidateImageName(imageName, selected.physicalImageId);
   if (
     record.candidate.oci.indexReference !==
-      `${selected.imageName}@${record.candidate.oci.indexDigest}` ||
+      `${imageName}@${record.candidate.oci.indexDigest}` ||
     record.candidate.oci.platformManifestReference !==
-      `${selected.imageName}@${record.candidate.oci.platformManifestDigest}`
+      `${imageName}@${record.candidate.oci.platformManifestDigest}`
   ) {
     throw new TypeError(
-      "Candidate import record OCI references must use the current matrix imageName and recorded digests.",
+      "Candidate import record OCI references must use the preserved receipt imageName and recorded digests.",
     );
   }
   if (

@@ -182,7 +182,7 @@ Deno.test("candidate import record bind accepts unrelated matrix drift and refus
         selectedEntryDrift,
       ),
     TypeError,
-    "candidate-entry-compatibility/1.0",
+    "candidate-entry-compatibility/2.0",
   );
 });
 

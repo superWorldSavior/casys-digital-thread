@@ -21,13 +21,18 @@ index, OCI platform-manifest, and later Microsandbox identities are separately t
 recorded. Their digest text may happen to be equal; that coincidence never merges their
 provenance.
 
-Binding uses `first-party-microsandbox-image-candidate-entry-compatibility/1.0`. It
+Binding uses `first-party-microsandbox-image-candidate-entry-compatibility/2.0`. It
 recalculates the fingerprint of the complete historical matrix preserved in the receipt,
-then requires the selected physical-image entry to be byte-for-byte identical to its
-unique entry in the current server-owned matrix. A change to another physical image does
-not invalidate this candidate. Any change to the selected image name, recipe, runtime
-contract, logical targets, or qualification target fails closed before Docker or
-Microsandbox.
+then compares the selected physical-image entry with its unique current entry. The only
+permitted difference is its exact publication name moving from
+`ghcr.io/casys-ai/casys-digital-thread-<physicalImageId>` to
+`ghcr.io/superworldsavior/casys-digital-thread-<physicalImageId>`. The receipt and
+import record retain the historical name, source fingerprint, SHA and OCI digest
+references; import pulls those original bytes. All other selected-entry fields must
+remain byte-for-byte identical, including the recipe, runtime contract, logical targets
+and qualification target. A change to another physical image does not invalidate this
+candidate. An arbitrary owner, package, alias or selected-entry change fails closed
+before Docker or Microsandbox.
 
 ## 2. Plan first
 

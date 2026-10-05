@@ -7,7 +7,8 @@
  * physical image. It never chooses a provider, tool, endpoint, or argument,
  * and it never claims or rewrites the catalogued Microsandbox runtime digest.
  *
- * Publication names are lowercase GHCR repositories under ghcr.io/casys-ai/.
+ * New publication names are lowercase repositories under ghcr.io/superworldsavior/.
+ * Historical Casys receipts retain their exact namespace and digest references.
  * Commit tags are applied by the release workflow; this module never emits
  * `latest`, a digest pin, or a mutable alias as the candidate identity.
  */
@@ -39,7 +40,8 @@ export const FIRST_PARTY_MICROSANDBOX_IMAGE_DISTRIBUTION_CONTRACT = Object.freez
   logicalTargetCount: 5,
 });
 
-const GHCR_REGISTRY = "ghcr.io/casys-ai" as const;
+const GHCR_REGISTRY = "ghcr.io/superworldsavior" as const;
+const HISTORICAL_GHCR_REGISTRY = "ghcr.io/casys-ai" as const;
 const PACKAGE_PREFIX = "casys-digital-thread-" as const;
 const OCI_REPOSITORY_SEGMENT = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
 
@@ -200,6 +202,58 @@ export function assertFirstPartyMicrosandboxImageDistributionContract(
       "Every first-party Microsandbox physical image must cover a logical target.",
     );
   }
+  for (const image of images) {
+    if (
+      image.packageName !== firstPartyMicrosandboxGhcrPackageName(image.physicalImageId)
+    ) {
+      throw new TypeError(
+        "First-party Microsandbox package name must match its physical image id.",
+      );
+    }
+    assertFirstPartyMicrosandboxCandidateImageName(
+      image.imageName,
+      image.physicalImageId,
+    );
+  }
+}
+
+/** The two exact publication identities; not a caller-selected registry. */
+export function assertFirstPartyMicrosandboxCandidateImageName(
+  imageName: string,
+  physicalImageId: string,
+): void {
+  const packageName = firstPartyMicrosandboxGhcrPackageName(physicalImageId);
+  if (
+    imageName !== `${GHCR_REGISTRY}/${packageName}` &&
+    imageName !== `${HISTORICAL_GHCR_REGISTRY}/${packageName}`
+  ) {
+    throw new TypeError(
+      "Candidate imageName must be the exact current or historical first-party GHCR repository for its physical image id.",
+    );
+  }
+}
+
+/**
+ * Preserve a historical entry without rewriting its receipt. Only the exact
+ * Casys-to-personal publication-name relocation may differ; every build,
+ * logical target, expected runtime label and qualification pin stays exact.
+ */
+export function firstPartyMicrosandboxDistributionEntriesAreCompatible(
+  historical: FirstPartyMicrosandboxImageDistributionEntry,
+  current: FirstPartyMicrosandboxImageDistributionEntry,
+): boolean {
+  const currentName = firstPartyMicrosandboxGhcrImageName(current.packageName);
+  if (current.imageName !== currentName) {
+    throw new TypeError(
+      "The current publication matrix must use the personal GHCR namespace.",
+    );
+  }
+  assertFirstPartyMicrosandboxCandidateImageName(
+    historical.imageName,
+    historical.physicalImageId,
+  );
+  return deterministicJson({ ...historical, imageName: currentName }) ===
+    deterministicJson(current);
 }
 
 function distributionEntry(
@@ -294,7 +348,7 @@ function assertCandidateGhcrImageName(imageName: string): void {
   const prefix = `${GHCR_REGISTRY}/`;
   if (!imageName.startsWith(prefix)) {
     throw new TypeError(
-      "First-party Microsandbox publication references must use ghcr.io/casys-ai/.",
+      "First-party Microsandbox publication references must use ghcr.io/superworldsavior/.",
     );
   }
   const packageName = imageName.slice(prefix.length);

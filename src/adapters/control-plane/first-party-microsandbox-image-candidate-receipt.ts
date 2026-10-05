@@ -11,6 +11,7 @@ import { deterministicJson } from "../../domain/kernel/deterministic-json.ts";
 import {
   assertFirstPartyMicrosandboxImageDistributionContract,
   fingerprintFirstPartyMicrosandboxImageDistributionMatrix,
+  firstPartyMicrosandboxDistributionEntriesAreCompatible,
   type FirstPartyMicrosandboxImageDistributionEntry,
   type FirstPartyMicrosandboxImageDistributionMatrix,
 } from "./first-party-microsandbox-image-distribution-matrix.ts";
@@ -22,11 +23,12 @@ export const FIRST_PARTY_MICROSANDBOX_IMAGE_CANDIDATE_RECEIPT_SCHEMA =
  * Binding policy for reusing one immutable image receipt after unrelated
  * entries in the server-owned distribution matrix have changed. The receipt
  * keeps its complete historical matrix and fingerprint. Only its selected
- * physical-image entry may bind to the current matrix, and that entry must be
+ * physical-image entry may bind to the current matrix. Only the exact historical
+ * Casys-to-personal imageName relocation may differ; all other fields must remain
  * byte-for-byte identical under deterministic JSON.
  */
 export const FIRST_PARTY_MICROSANDBOX_IMAGE_CANDIDATE_ENTRY_COMPATIBILITY_SCHEMA =
-  "first-party-microsandbox-image-candidate-entry-compatibility/1.0" as const;
+  "first-party-microsandbox-image-candidate-entry-compatibility/2.0" as const;
 
 const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const GIT_SHA = /^[0-9a-f]{40}$/u;
@@ -264,9 +266,14 @@ export async function bindFirstPartyMicrosandboxImageCandidateReceiptToCurrentMa
     matrix,
     receipt.candidate.physicalImageId,
   );
-  if (deterministicJson(historicalEntry) !== deterministicJson(currentEntry)) {
+  if (
+    !firstPartyMicrosandboxDistributionEntriesAreCompatible(
+      historicalEntry,
+      currentEntry,
+    )
+  ) {
     throw new TypeError(
-      `Candidate receipt selected entry is not identical to the current server-owned distribution entry under ${FIRST_PARTY_MICROSANDBOX_IMAGE_CANDIDATE_ENTRY_COMPATIBILITY_SCHEMA}.`,
+      `Candidate receipt selected entry is not compatible with the current server-owned distribution entry under ${FIRST_PARTY_MICROSANDBOX_IMAGE_CANDIDATE_ENTRY_COMPATIBILITY_SCHEMA}.`,
     );
   }
   return receipt;

@@ -44,17 +44,17 @@ Deno.test("candidate receipt preserves exact build facts while keeping promotion
   );
   assertEquals(
     receipt.candidate.oci.indexReference,
-    "ghcr.io/casys-ai/casys-digital-thread-modelica-microsandbox-worker@" +
+    "ghcr.io/superworldsavior/casys-digital-thread-modelica-microsandbox-worker@" +
       OCI_INDEX_DIGEST,
   );
   assertEquals(
     receipt.candidate.oci.platformManifestReference,
-    "ghcr.io/casys-ai/casys-digital-thread-modelica-microsandbox-worker@" +
+    "ghcr.io/superworldsavior/casys-digital-thread-modelica-microsandbox-worker@" +
       PLATFORM_MANIFEST_DIGEST,
   );
   assertEquals(
     receipt.candidate.locatorReference,
-    "ghcr.io/casys-ai/casys-digital-thread-modelica-microsandbox-worker:" +
+    "ghcr.io/superworldsavior/casys-digital-thread-modelica-microsandbox-worker:" +
       `git-${GIT_SHA}-run-42-1`,
   );
   assertEquals(receipt.candidate.logicalTargets.length, 1);
@@ -234,7 +234,7 @@ Deno.test("candidate receipt bind accepts unrelated matrix drift and refuses sel
         selectedEntryDrift,
       ),
     TypeError,
-    "candidate-entry-compatibility/1.0",
+    "candidate-entry-compatibility/2.0",
   );
 });
 

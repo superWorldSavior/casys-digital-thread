@@ -60,7 +60,7 @@ Deno.test(
     );
     assertEquals(
       matrix.images.every((image) =>
-        image.imageName === `ghcr.io/casys-ai/${image.packageName}` &&
+        image.imageName === `ghcr.io/superworldsavior/${image.packageName}` &&
         image.imageName === image.imageName.toLowerCase() &&
         !image.imageName.includes(":") &&
         !image.imageName.includes("@") &&
@@ -215,7 +215,7 @@ Deno.test("publication names stay lowercase and refuse mutable aliases", () => {
   );
   assertEquals(
     firstPartyMicrosandboxGhcrImageName("casys-digital-thread-ngspice-worker"),
-    "ghcr.io/casys-ai/casys-digital-thread-ngspice-worker",
+    "ghcr.io/superworldsavior/casys-digital-thread-ngspice-worker",
   );
   assertThrows(
     () => firstPartyMicrosandboxGhcrPackageName("Ngspice-Worker"),
@@ -278,7 +278,7 @@ Deno.test(
     assertEquals(image.expectedUser, ngspice.buildRecipe.user);
     assertEquals(
       image.imageName,
-      "ghcr.io/casys-ai/casys-digital-thread-ngspice-worker",
+      "ghcr.io/superworldsavior/casys-digital-thread-ngspice-worker",
     );
     assertEquals(image.imageName === ngspice.targetImageReference, false);
     assertEquals(image.imageName === ociSource.reference, false);

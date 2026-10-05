@@ -46,6 +46,14 @@ Deno.test(
     if (!prepare || !build) {
       throw new TypeError("publish workflow must declare prepare and build jobs");
     }
+    const identityGuard = prepare.steps.find((step) =>
+      (step.run ?? "").includes("GITHUB_REPOSITORY_ID")
+    );
+    assertEquals(
+      (identityGuard?.run ?? "").includes('"superWorldSavior/casys-digital-thread"'),
+      true,
+    );
+    assertEquals((identityGuard?.run ?? "").includes('"1316957248"'), true);
     assertEquals(prepare.permissions, { contents: "read" });
     assertEquals(build.permissions, {
       contents: "read",
@@ -103,6 +111,12 @@ Deno.test(
     );
     assertEquals(
       (exportStep?.run ?? "").includes("five-physical/five-logical"),
+      true,
+    );
+    assertEquals(
+      (exportStep?.run ?? "").includes(
+        '.imageName != ("ghcr.io/superworldsavior/" + .packageName)',
+      ),
       true,
     );
     assertEquals(

@@ -34,6 +34,10 @@ jobs:
       - name: Require an exact git tag
         run: |
           set -euo pipefail
+          if [ "${GITHUB_REPOSITORY}" != "superWorldSavior/casys-digital-thread" ] || [ "${GITHUB_REPOSITORY_ID}" != "1316957248" ]; then
+            echo "Personal worker publication requires the transferred Digital Thread repository identity." >&2
+            exit 1
+          fi
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
             echo "This workflow must be invoked on an exact git tag; github.ref_type=${GITHUB_REF_TYPE}." >&2
             exit 1
@@ -86,6 +90,10 @@ jobs:
           fi
           if jq -e '.images[] | select(.imageName | test("latest|@|:"))' matrix.json >/dev/null; then
             echo "Distribution matrix contains a mutable or digest publication reference." >&2
+            exit 1
+          fi
+          if jq -e '.images[] | select(.imageName != ("ghcr.io/superworldsavior/" + .packageName))' matrix.json >/dev/null; then
+            echo "Future candidates must publish to the personal GHCR namespace." >&2
             exit 1
           fi
           {

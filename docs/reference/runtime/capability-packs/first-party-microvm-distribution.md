@@ -1,4 +1,5 @@
 # Reference: first-party microVM distribution
+
 > Verified-Against: b8ff8135 (2026-09-09).
 
 Audience: maintainer · Diátaxis: reference · Kind: contract
@@ -34,8 +35,13 @@ five unique physical images and five unique logical targets. The distribution ma
 derived from `createFirstPartyMicrosandboxImageBootstrapDescriptors(catalog)`; it is not
 a second hard-coded worker list.
 
-Package names are lowercase repositories under `ghcr.io/casys-ai/` of the form
-`casys-digital-thread-<physicalImageId>`. Publication never uses `latest`.
+Future package names are lowercase repositories under `ghcr.io/superworldsavior/` of the
+form `casys-digital-thread-<physicalImageId>`. Publication never uses `latest`.
+
+Historical receipts retain their exact `ghcr.io/casys-ai/` image names and digest
+references. The publication-name change does not rewrite the two existing Casys
+acquisition sources or any Microsandbox runtime pin. A future personal candidate must
+pass the existing import and qualification reviews before it can replace either source.
 
 ## What distribution does and does not do
 
@@ -103,10 +109,9 @@ aggregate image. Do not label an image only with this repository's `AGPL-3.0-onl
 licence.
 
 New GHCR packages are not assumed public. Anonymous pull is not a publication claim. The
-workflow must run from the reviewed GitHub publication mirror; an internal development
-remote alone is not a public distribution surface. Package visibility, anonymous pull,
-and aggregate-image licence review happen after candidate build, before any runtime
-promotion.
+workflow requires `superWorldSavior/casys-digital-thread` with repository ID
+`1316957248`. Package visibility, anonymous pull, and aggregate-image licence review
+happen after candidate build, before any runtime promotion.
 
 ## Platform
 
@@ -123,18 +128,21 @@ workflow is `.github/workflows/publish-first-party-microvm-images.yml`.
 The GHCR receipt is not a Microsandbox cache entry. Maintainer import takes that exact
 receipt plus the current server-owned matrix, re-parses the receipt, recalculates the
 fingerprint of its complete historical matrix, and applies
-`first-party-microsandbox-image-candidate-entry-compatibility/1.0` before any Docker or
-Microsandbox effect. This bind requires the receipt's unique selected physical-image
-entry to be byte-for-byte identical to the corresponding current entry. Unrelated image
-entries may have advanced; the selected image name, recipe, runtime contract, logical
-targets and qualification target may not. Import then re-reads the OCI index and proves
-exactly one `linux/arm64` child matches the receipt, pulls the platform-manifest digest,
-inspects OS/arch/user/entrypoint/labels, saves, and generates an invocation-owned nonce
-for a unique non-catalog staging tag. It refuses a pre-existing staging tag. Returned
-`Image.load` handles must prove the requested tag was applied and must not include the
-active catalogue pin. The observed Microsandbox digest is recorded, only the
-proven-owned staging reference is removed, and the same archive is loaded again as the
-canonical Microsandbox cache reference
+`first-party-microsandbox-image-candidate-entry-compatibility/2.0` before any Docker or
+Microsandbox effect. The current selected entry must use the personal publication name.
+This bind permits only the exact historical Casys-to-personal publication-name
+relocation for the same physical image; every other selected-entry field must remain
+byte-for-byte identical. Unrelated image entries may have advanced. The selected recipe,
+runtime contract, logical targets and qualification target may not. Historical receipts,
+fingerprints, SHAs and OCI references are never rewritten or retagged. Import pulls the
+original receipt's source. No other registry owner, package or alias is admitted. Import
+then re-reads the OCI index and proves exactly one `linux/arm64` child matches the
+receipt, pulls the platform-manifest digest, inspects OS/arch/user/entrypoint/labels,
+saves, and generates an invocation-owned nonce for a unique non-catalog staging tag. It
+refuses a pre-existing staging tag. Returned `Image.load` handles must prove the
+requested tag was applied and must not include the active catalogue pin. The observed
+Microsandbox digest is recorded, only the proven-owned staging reference is removed, and
+the same archive is loaded again as the canonical Microsandbox cache reference
 `docker.io/casys/first-party-candidate-<physicalImageId>@sha256:<observed-msb-digest>`
 derived by `pinnedOciImageReference`. The factual import record still stores the short
 `casys/first-party-candidate-<physicalImageId>@sha256:<observed-msb-digest>` identity.
