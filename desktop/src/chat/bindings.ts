@@ -1,5 +1,6 @@
 import {
   type ChatCommandResponse,
+  type ChatConversationDto,
   type ChatSaveFileResponse,
   type ChatSnapshotDto,
   type ChatViewerAppFetchResponse,
@@ -46,7 +47,7 @@ export function registerDesktopChatBindings(
   viewerApp?: ChatViewerBackend,
   fileSaver?: DesktopChatFileSaver,
 ): void {
-  // Project owner per conversation id; undefined marks a standalone chat.
+  // Presentation scope per chat; undefined marks an unattached standalone chat.
   const conversationProjects = new Map<string, string | undefined>();
   window.bind(CHAT_SNAPSHOT_BINDING, async (value: unknown) => {
     const input = parseChatSnapshotRequest(value);
@@ -112,7 +113,13 @@ export function registerDesktopChatBindings(
       input.command === "conversation.create" && response.ok &&
       response.conversationId !== undefined
     ) {
-      conversationProjects.set(response.conversationId, input.projectId);
+      conversationProjects.set(
+        response.conversationId,
+        input.projectId ?? input.workspaceProjectId,
+      );
+    }
+    if (input.command === "conversation.attach-project" && response.ok) {
+      conversationProjects.set(input.conversationId, input.workspaceProjectId);
     }
     return response;
   });
@@ -260,28 +267,44 @@ async function focusedSnapshot(
   if (input.conversationId === undefined) {
     conversationProjects.clear();
     for (const conversation of snapshot.conversations) {
-      conversationProjects.set(conversation.id, conversation.projectId);
+      conversationProjects.set(conversation.id, conversationProjectScope(conversation));
     }
   }
-  // Standalone chats are not project-scoped: they pass regardless of focus.
-  // Project conversations stay confined to the focused project.
+  // Unattached standalone chats remain global. Both project membership types
+  // stay confined to the current focus without changing runtime authority.
+  const selected = input.conversationId ?? snapshot.selectedConversationId;
   const conversations = Object.freeze(
     snapshot.conversations.filter((conversation) =>
-      (conversation.kind === "standalone" ||
-        conversation.projectId === focusedProjectId) &&
-      (input.conversationId === undefined || conversation.id === input.conversationId)
+      conversationVisibleAtFocus(conversation, focusedProjectId)
+    ).map((conversation) =>
+      conversation.id === selected ? conversation : Object.freeze({
+        ...conversation,
+        messages: Object.freeze([]),
+        viewers: Object.freeze([]),
+      })
     ),
   );
-  const selectedConversationId = snapshot.selectedConversationId !== undefined &&
-      conversations.some((conversation) =>
-        conversation.id === snapshot.selectedConversationId
-      )
-    ? snapshot.selectedConversationId
+  const owners = new Map(
+    snapshot.conversations.map((conversation) => [conversation.id, conversation]),
+  );
+  const projectViewers = snapshot.projectViewers === undefined
+    ? undefined
+    : Object.freeze(snapshot.projectViewers.filter((entry) => {
+      const owner = owners.get(entry.owningConversationId);
+      return focusedProjectId !== undefined &&
+        entry.workspaceProjectId === focusedProjectId &&
+        owner?.kind === "standalone" && owner.workspaceProjectId === focusedProjectId;
+    }));
+  const selectedConversationId = selected !== undefined &&
+      conversations.some((conversation) => conversation.id === selected)
+    ? selected
     : undefined;
   return Object.freeze({
     protocol: DESKTOP_CHAT_PROTOCOL,
     host: snapshot.host,
     conversations,
+    ...(projectViewers === undefined ? {} : { projectViewers }),
+    ...(snapshot.retention === undefined ? {} : { retention: snapshot.retention }),
     connectableMcps: snapshot.connectableMcps,
     ...(selectedConversationId === undefined ? {} : { selectedConversationId }),
     ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
@@ -292,7 +315,7 @@ async function focusedSnapshot(
 
 /**
  * Decides whether one conversation id may be selected through the binding.
- * Standalone chats always pass; project conversations must match the focus.
+ * Unattached standalone chats pass; project members must match the focus.
  * Unknown ids are verified against the host so a first call cannot peek
  * across the project focus.
  */
@@ -319,9 +342,24 @@ async function conversationVisibleFromBinding(
     candidate.id === conversationId
   );
   if (conversation === undefined) return false;
-  conversationProjects.set(conversationId, conversation.projectId);
-  return conversation.kind === "standalone" ||
-    conversation.projectId === focusedProjectId;
+  conversationProjects.set(conversationId, conversationProjectScope(conversation));
+  return conversationVisibleAtFocus(conversation, focusedProjectId);
+}
+
+function conversationProjectScope(
+  conversation: ChatConversationDto,
+): string | undefined {
+  return conversation.kind === "project"
+    ? conversation.projectId
+    : conversation.workspaceProjectId;
+}
+
+function conversationVisibleAtFocus(
+  conversation: ChatConversationDto,
+  focusedProjectId: string | undefined,
+): boolean {
+  const scope = conversationProjectScope(conversation);
+  return scope === undefined || scope === focusedProjectId;
 }
 
 async function readCurrentProjectFocus(
@@ -356,7 +394,10 @@ async function authorizeProjectCommand(
   projectFocus?: DesktopChatProjectFocusAuthority,
 ): Promise<string | undefined> {
   // Standalone creation carries no project and needs no focus.
-  if (input.command === "conversation.create" && input.projectId === undefined) {
+  if (
+    input.command === "conversation.create" && input.projectId === undefined &&
+    input.workspaceProjectId === undefined
+  ) {
     return undefined;
   }
   // Agent registry commands carry no conversation and need no focus.
@@ -381,15 +422,31 @@ async function authorizeProjectCommand(
       candidate.id === input.conversationId
     );
     if (conversation === undefined) return focusMismatch();
-    if (conversation.kind === "standalone") return undefined;
+    if (input.command === "conversation.attach-project") {
+      if (conversation.kind !== "standalone") {
+        return "Whiteboard membership requires a standalone conversation.";
+      }
+      if (
+        conversation.workspaceProjectId !== undefined &&
+        conversation.workspaceProjectId !== input.workspaceProjectId
+      ) {
+        return focusMismatch();
+      }
+      return await authorizeProjectConversation(input.workspaceProjectId, projectFocus);
+    }
+    if (
+      conversation.kind === "standalone" &&
+      conversation.workspaceProjectId === undefined
+    ) return undefined;
     return await authorizeProjectConversation(
-      conversation.projectId,
+      conversationProjectScope(conversation),
       projectFocus,
     );
   }
-  const focusedProjectId = await readCurrentProjectFocus(projectFocus);
-  if (focusedProjectId === undefined) return unavailableFocus();
-  return input.projectId !== focusedProjectId ? focusMismatch() : undefined;
+  return await authorizeProjectConversation(
+    input.projectId ?? input.workspaceProjectId,
+    projectFocus,
+  );
 }
 
 async function authorizeProjectConversation(

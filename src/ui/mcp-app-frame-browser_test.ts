@@ -91,6 +91,7 @@ Deno.test({
         headers: {
           "Content-Type": "text/html; charset=utf-8",
           "Content-Security-Policy": parentCsp(HOST_NONCE),
+          "X-Frame-Options": "DENY",
           "Cache-Control": "no-store",
         },
       });
@@ -322,6 +323,7 @@ function parentDocument(session: unknown): string {
 function parentCsp(nonce: string): string {
   return [
     "default-src 'none'",
+    "frame-ancestors 'self'",
     `script-src 'nonce-${nonce}'`,
     "script-src-attr 'none'",
     "style-src 'unsafe-inline'",

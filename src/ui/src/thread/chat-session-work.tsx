@@ -16,6 +16,7 @@ export interface ChatSessionWorkListProps {
   readonly retention: ChatRetentionDto | undefined;
   readonly sendMessage: (text: string) => void;
   readonly dispatch: ChatViewerDispatch | undefined;
+  readonly onOpenViewer?: (viewerId: string) => void;
   readonly command: (
     request: DesktopChatBindingCommandRequest,
   ) => Promise<ChatCommandResponse | undefined>;
@@ -44,7 +45,7 @@ function formatDate(iso: string): string {
 /**
  * Per-session saved-work list (#51): one row per result version with its
  * revision, outcome, and retained exports. Hashes and protocol detail stay
- * in inspection; opening and exporting stay on the per-message viewer.
+ * in inspection; results remain accessible even after their messages retire.
  */
 export function ChatSessionWorkList({
   conversation,
@@ -52,6 +53,7 @@ export function ChatSessionWorkList({
   sendMessage,
   dispatch,
   command,
+  onOpenViewer,
 }: ChatSessionWorkListProps): JSX.Element {
   const versions = [...conversation.viewers].reverse();
   return (
@@ -87,6 +89,7 @@ export function ChatSessionWorkList({
             sendMessage={sendMessage}
             dispatch={dispatch}
             command={command}
+            onOpenViewer={onOpenViewer}
           />
         ))}
       </ol>
@@ -100,12 +103,14 @@ function WorkVersionRow({
   sendMessage,
   dispatch,
   command,
+  onOpenViewer,
 }: {
   readonly viewer: ChatToolViewerDto;
   readonly conversationId: string;
   readonly sendMessage: (text: string) => void;
   readonly dispatch: ChatViewerDispatch | undefined;
   readonly command: ChatSessionWorkListProps["command"];
+  readonly onOpenViewer: ChatSessionWorkListProps["onOpenViewer"];
 }): JSX.Element {
   const archive = viewer.archive;
   const [busy, setBusy] = useState(false);
@@ -175,6 +180,16 @@ function WorkVersionRow({
       <div className="desktop-chat-project-line">
         <span>{label}</span>
         {archive?.failed === true && <strong>failed</strong>}
+        {onOpenViewer !== undefined && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenViewer(viewer.viewerId)}
+          >
+            Open result
+          </Button>
+        )}
       </div>
       {archive === undefined && (
         <p className="desktop-chat-viewer-status">

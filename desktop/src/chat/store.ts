@@ -75,6 +75,8 @@ export interface FileChatConversationStoreOptions {
   readonly retentionDays?: number;
   readonly maxConversations?: number;
   readonly maxMessagesPerConversation?: number;
+  /** Post-commit artifact cleanup port, injectable for failure tests. */
+  readonly removeArtifactFile?: (path: string) => Promise<void>;
 }
 
 /**
@@ -87,6 +89,7 @@ export class FileChatConversationStore implements ChatConversationStore {
   readonly #retentionMs: number;
   readonly #maxConversations: number;
   readonly #maxMessages: number;
+  readonly #removeArtifactFile: (path: string) => Promise<void>;
 
   constructor(options: FileChatConversationStoreOptions) {
     this.#root = options.root;
@@ -94,6 +97,8 @@ export class FileChatConversationStore implements ChatConversationStore {
     this.#retentionMs = (options.retentionDays ?? 30) * 86_400_000;
     this.#maxConversations = options.maxConversations ?? 50;
     this.#maxMessages = options.maxMessagesPerConversation ?? 400;
+    this.#removeArtifactFile = options.removeArtifactFile ??
+      ((path) => Deno.remove(path));
   }
 
   async load(): Promise<readonly StoredConversation[]> {
@@ -160,7 +165,13 @@ export class FileChatConversationStore implements ChatConversationStore {
     });
     // Message pruning never drops artifact bytes: only bytes unreferenced
     // by every retained conversation prune, on conversation retention.
-    await this.#pruneArtifacts(referencedArtifactDigests(retained));
+    try {
+      await this.#pruneArtifacts(referencedArtifactDigests(retained));
+    } catch {
+      // The index already committed. A failed cleanup cannot turn this save
+      // into a reported failure; the next save will retry unreferenced bytes.
+      console.warn("Chat artifact cleanup failed after commit; retrying on next save.");
+    }
   }
 
   async saveArtifact(sha256: string, bytes: Uint8Array): Promise<void> {
@@ -192,7 +203,7 @@ export class FileChatConversationStore implements ChatConversationStore {
       if (!entry.isFile || !entry.name.endsWith(ARTIFACT_FILE_SUFFIX)) continue;
       const sha256 = entry.name.slice(0, -ARTIFACT_FILE_SUFFIX.length);
       if (!isArtifactSha(sha256) || referenced.has(sha256)) continue;
-      await Deno.remove(`${this.#root}/artifacts/${entry.name}`);
+      await this.#removeArtifactFile(`${this.#root}/artifacts/${entry.name}`);
     }
   }
 

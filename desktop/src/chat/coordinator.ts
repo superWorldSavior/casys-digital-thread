@@ -1,5 +1,6 @@
 import {
   CHAT_CANVAS_LAYOUT_VERSION,
+  CHAT_PROJECT_VIEWERS_MAX,
   type ChatCanvasLayoutDto,
   type ChatCommandRequest,
   type ChatCommandResponse,
@@ -10,6 +11,7 @@ import {
   type ChatConversationStatus,
   type ChatMessageDto,
   type ChatPendingInteractionDto,
+  type ChatProjectViewerDto,
   type ChatSnapshotDto,
   type ChatToolViewerDto,
   type ChatViewerArtifactRecord,
@@ -20,6 +22,7 @@ import {
   isChatOpaqueId,
   isChatViewerToolName,
   isChatViewerUiUri,
+  parseCasysProjectId,
   parseChatViewerArguments,
   parseChatViewerJson,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
@@ -104,6 +107,7 @@ interface ConversationState {
   readonly id: string;
   readonly kind: ChatConversationKind;
   readonly projectId?: string;
+  workspaceProjectId?: string;
   /** Active agent profile; explicit per conversation, never inherited. */
   agentProfileId: string;
   sessionKey: string;
@@ -237,6 +241,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   readonly #sessionOwners = new Map<string, string>();
   #host: "ready" | "shutting-down" = "ready";
   #persistTail: Promise<void> = Promise.resolve();
+  #projectAttachmentGate?: Promise<void>;
   #profileReloading = false;
   #stopPromise?: Promise<void>;
 
@@ -302,6 +307,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       protocol: DESKTOP_CHAT_PROTOCOL,
       host: this.#host,
       conversations: Object.freeze(conversations),
+      projectViewers: this.#projectViewers(ordered),
       connectableMcps: Object.freeze(
         this.#mcpServers.map((server): ChatConnectableMcpDto =>
           Object.freeze({
@@ -348,6 +354,14 @@ export class ChatCoordinator implements RuntimeInteractionSink {
           conversationId = await this.#createConversation(
             request.projectId,
             request.title,
+            request.workspaceProjectId,
+          );
+          break;
+        case "conversation.attach-project":
+          conversationId = request.conversationId;
+          await this.#attachConversationProject(
+            conversationId,
+            request.workspaceProjectId,
           );
           break;
         case "message.send":
@@ -586,7 +600,17 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     return this.#stopPromise;
   }
 
-  async #createConversation(projectId?: string, title?: string): Promise<string> {
+  async #createConversation(
+    projectId?: string,
+    title?: string,
+    workspaceProjectId?: string,
+  ): Promise<string> {
+    if (workspaceProjectId !== undefined) {
+      workspaceProjectId = parseCasysProjectId(workspaceProjectId);
+      if (projectId !== undefined) {
+        throw new Error("projectId and workspaceProjectId are mutually exclusive");
+      }
+    }
     const id = `conversation:${this.#newId()}`;
     const now = this.#now().toISOString();
     const kind: ChatConversationKind = projectId === undefined
@@ -600,6 +624,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       id,
       kind,
       ...(projectId === undefined ? {} : { projectId }),
+      ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
       agentProfileId,
       sessionKey: profileSessionKey(baseKey, agentProfileId),
       mcpTools: [],
@@ -616,6 +641,41 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     });
     await this.#persist();
     return id;
+  }
+
+  async #attachConversationProject(
+    conversationId: string,
+    workspaceProjectId: string,
+  ): Promise<void> {
+    workspaceProjectId = parseCasysProjectId(workspaceProjectId);
+    while (this.#projectAttachmentGate !== undefined) {
+      await this.#projectAttachmentGate;
+    }
+    const conversation = this.#conversation(conversationId);
+    if (conversation.kind !== "standalone") {
+      throw new Error("whiteboard membership requires a standalone conversation");
+    }
+    if (conversation.status === "closed") throw new Error("conversation is closed");
+    if (conversation.workspaceProjectId === workspaceProjectId) {
+      await this.#persist();
+      return;
+    }
+    if (conversation.workspaceProjectId !== undefined) {
+      throw new Error("conversation already belongs to another project whiteboard");
+    }
+    const updatedAt = this.#now().toISOString();
+    const completion = Promise.withResolvers<void>();
+    this.#projectAttachmentGate = completion.promise;
+    try {
+      // Keep the live conversation unattached until its store snapshot commits.
+      // Other persistence waits for this result before capturing its snapshot.
+      await this.#persistSnapshot({ conversationId, workspaceProjectId, updatedAt });
+      conversation.workspaceProjectId = workspaceProjectId;
+      if (conversation.updatedAt < updatedAt) conversation.updatedAt = updatedAt;
+    } finally {
+      this.#projectAttachmentGate = undefined;
+      completion.resolve();
+    }
   }
 
   async #enqueueMessage(
@@ -1920,11 +1980,7 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     const viewers: ChatToolViewerDto[] = includeMessages
       ? conversation.toolResults.map((entry) =>
         Object.freeze({
-          viewerId: entry.viewerId,
-          toolCallId: entry.toolCallId,
-          messageId: entry.messageId,
-          tool: entry.tool,
-          appUri: entry.appUri,
+          ...toolViewerIdentity(entry),
           ...(entry.revision === undefined || entry.resultDigest === undefined ? {} : {
             archive: Object.freeze({
               revision: entry.revision,
@@ -1958,6 +2014,9 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       ...(conversation.projectId === undefined
         ? {}
         : { projectId: conversation.projectId }),
+      ...(conversation.workspaceProjectId === undefined
+        ? {}
+        : { workspaceProjectId: conversation.workspaceProjectId }),
       title: conversation.title,
       status: conversation.status,
       createdAt: conversation.createdAt,
@@ -1972,12 +2031,41 @@ export class ChatCoordinator implements RuntimeInteractionSink {
     });
   }
 
+  #projectViewers(
+    conversations: readonly ConversationState[],
+  ): readonly ChatProjectViewerDto[] {
+    const retained = conversations.flatMap((conversation) => {
+      const workspaceProjectId = conversation.workspaceProjectId;
+      return conversation.kind === "standalone" && workspaceProjectId !== undefined
+        ? conversation.toolResults.map((result) => ({
+          conversation,
+          workspaceProjectId,
+          result,
+        }))
+        : [];
+    }).sort((a, b) =>
+      a.result.capturedAt.localeCompare(b.result.capturedAt) ||
+      a.conversation.id.localeCompare(b.conversation.id) ||
+      a.result.viewerId.localeCompare(b.result.viewerId)
+    ).slice(-CHAT_PROJECT_VIEWERS_MAX);
+    return Object.freeze(
+      retained.map(({ conversation, workspaceProjectId, result }) =>
+        Object.freeze({
+          workspaceProjectId,
+          owningConversationId: conversation.id,
+          viewer: toolViewerIdentity(result),
+        })
+      ),
+    );
+  }
+
   #restore(stored: StoredConversation): boolean {
     const kind: ChatConversationKind = stored.kind ??
       (stored.projectId !== undefined ? "project" : "standalone");
     if (kind === "project") {
       if (
         stored.projectId === undefined ||
+        stored.workspaceProjectId !== undefined ||
         !stored.sessionKey.startsWith(`${SESSION_PREFIX}/${stored.projectId}/`)
       ) return false;
     } else {
@@ -1985,6 +2073,13 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         stored.projectId !== undefined ||
         !stored.sessionKey.startsWith(`${SESSION_PREFIX}/standalone/`)
       ) return false;
+      if (stored.workspaceProjectId !== undefined) {
+        try {
+          parseCasysProjectId(stored.workspaceProjectId);
+        } catch {
+          return false;
+        }
+      }
     }
     // Absent profile reads as legacy Codex and keeps the stored key
     // verbatim: pre-profile conversations resume identical sessions and
@@ -2001,6 +2096,9 @@ export class ChatCoordinator implements RuntimeInteractionSink {
       id: stored.id,
       kind,
       ...(stored.projectId === undefined ? {} : { projectId: stored.projectId }),
+      ...(stored.workspaceProjectId === undefined
+        ? {}
+        : { workspaceProjectId: stored.workspaceProjectId }),
       agentProfileId,
       sessionKey: stored.sessionKey,
       ...(mcpAttached ? { mcpId } : {}),
@@ -2064,11 +2162,29 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   }
 
   #persist(): Promise<void> {
+    const gate = this.#projectAttachmentGate;
+    return gate === undefined
+      ? this.#persistSnapshot()
+      : gate.then(() => this.#persist());
+  }
+
+  #persistSnapshot(
+    membership?: {
+      readonly conversationId: string;
+      readonly workspaceProjectId: string;
+      readonly updatedAt: string;
+    },
+  ): Promise<void> {
     const snapshot = [...this.#conversations.values()].map((entry) =>
       Object.freeze({
         id: entry.id,
         kind: entry.kind,
         ...(entry.projectId === undefined ? {} : { projectId: entry.projectId }),
+        ...(membership?.conversationId === entry.id
+          ? { workspaceProjectId: membership.workspaceProjectId }
+          : entry.workspaceProjectId === undefined
+          ? {}
+          : { workspaceProjectId: entry.workspaceProjectId }),
         agentProfileId: entry.agentProfileId,
         ...(entry.mcpId === undefined ? {} : { mcpId: entry.mcpId }),
         ...(entry.mcpStatus === undefined ? {} : { mcpStatus: entry.mcpStatus }),
@@ -2115,7 +2231,9 @@ export class ChatCoordinator implements RuntimeInteractionSink {
         title: entry.title,
         status: entry.status,
         createdAt: entry.createdAt,
-        updatedAt: entry.updatedAt,
+        updatedAt: membership?.conversationId === entry.id
+          ? membership.updatedAt
+          : entry.updatedAt,
         messages: Object.freeze([...entry.messages]),
         canvasLayout: entry.canvasLayout,
       })
@@ -2139,6 +2257,16 @@ export class ChatCoordinator implements RuntimeInteractionSink {
   }
 }
 
+function toolViewerIdentity(entry: CapturedToolResult): ChatToolViewerDto {
+  return Object.freeze({
+    viewerId: entry.viewerId,
+    toolCallId: entry.toolCallId,
+    messageId: entry.messageId,
+    tool: entry.tool,
+    appUri: entry.appUri,
+  });
+}
+
 function projectSystemPrompt(projectId: string): string {
   return [
     "You are embedded in Casys Digital Thread Desktop.",
@@ -2154,7 +2282,7 @@ function projectSystemPrompt(projectId: string): string {
 function standaloneSystemPrompt(conversation: ConversationState): string {
   const lines = [
     "You are embedded in Casys Digital Thread Desktop.",
-    "This is a standalone conversation: no Casys project, brief, SysML model, Thread baseline, or Canvas is attached.",
+    "This is a standalone conversation: no Casys project, brief, SysML model, or Thread baseline is attached.",
   ];
   if (conversation.mcpStatus === "connected" && conversation.mcpId !== undefined) {
     lines.push(

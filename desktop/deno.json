@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/denoland/deno/v2.9.2/cli/schemas/config-file.v1.json",
+  "$schema": "https://raw.githubusercontent.com/denoland/deno/v2.9.6/cli/schemas/config-file.v1.json",
   "name": "casys-digital-thread-desktop",
   "version": "0.4.0",
   "exports": "./main.ts",
@@ -10,10 +10,10 @@
     ]
   },
   "tasks": {
-    "check": "deno check main.ts src/application/**/*.ts src/contracts/**/*.ts src/host/**/*.ts src/renderer/**/*.ts src/chat/**/*.ts src/chat-host/**/*.ts src/build/**/*.ts src/catalogue/**/*.ts src/tool-runtime/**/*.ts src/workbench/{cli,compile-permissions,contracts,host,proxy,runtime,workspace}.ts && deno check --config=../deno.json src/sidecar/main.ts src/workbench/main.ts",
-    "fmt": "deno fmt --check deno.json README.md component-manifest.json main.ts src",
-    "lint": "deno lint main.ts src",
-    "test": "deno test --allow-read --allow-write --allow-net=127.0.0.1 --ignore=e2e/chat-mrtr-server_e2e_test.ts --ignore=src/sidecar --ignore=src/workbench --ignore=src/build/compiled-helper_e2e_test.ts --ignore=src/build/compiled-workbench-helper_e2e_test.ts --ignore=src/build/chat-host-bundle_test.ts --ignore=src/build/packaged-chat-runtime_e2e_test.ts --ignore=src/build/packaged-chat-host_e2e_test.ts --ignore=src/build/packaged-mcp-capture_e2e_test.ts --ignore=src/catalogue/distribution-profile_test.ts src && deno test --config=../deno.json --allow-read --allow-write --allow-net=127.0.0.1 src/sidecar src/workbench",
+    "check": "deno check main.ts e2e/native-memory-guard.ts e2e/native-memory-guard_test.ts src/application/**/*.ts src/contracts/**/*.ts src/host/**/*.ts src/renderer/**/*.ts src/chat/**/*.ts src/chat-host/**/*.ts src/build/**/*.ts src/catalogue/**/*.ts src/tool-runtime/**/*.ts src/workbench/{cli,compile-permissions,contracts,host,proxy,runtime,workspace}.ts && deno check --config=../deno.json src/sidecar/main.ts src/workbench/main.ts",
+    "fmt": "deno fmt --check deno.json README.md component-manifest.json main.ts e2e/native-memory-guard.ts e2e/native-memory-guard_test.ts src",
+    "lint": "deno lint main.ts e2e/native-memory-guard.ts e2e/native-memory-guard_test.ts src",
+    "test": "deno test --allow-read --allow-write --allow-net=127.0.0.1 --ignore=e2e/chat-mrtr-server_e2e_test.ts --ignore=src/sidecar --ignore=src/workbench --ignore=src/build/compiled-helper_e2e_test.ts --ignore=src/build/compiled-workbench-helper_e2e_test.ts --ignore=src/build/chat-host-bundle_test.ts --ignore=src/build/packaged-chat-runtime_e2e_test.ts --ignore=src/build/packaged-chat-host_e2e_test.ts --ignore=src/build/packaged-mcp-capture_e2e_test.ts --ignore=src/catalogue/distribution-profile_test.ts src && deno test e2e/native-memory-guard_test.ts && deno test --config=../deno.json --allow-read --allow-write --allow-net=127.0.0.1 src/sidecar src/workbench",
     "catalogue:profile-test": "deno test --allow-read --allow-write --allow-run=casys-control-plane,casys-chat-host,casys-workbench,open,docker,/opt/homebrew/bin/docker,/usr/local/bin/docker,/usr/bin/docker --allow-net=127.0.0.1 --allow-env=HOME,XDG_DATA_HOME,APPDATA,LOCALAPPDATA,CODEX_HOME,OPENAI_API_KEY src/catalogue/distribution-profile_test.ts",
     "ui:build": "npm --prefix ../src/ui run build:thread",
     "workbench:compile": "deno task ui:build && deno run --no-prompt --allow-run=deno --allow-write=dist --deny-env --deny-net src/build/compile-workbench-helper.ts",
@@ -26,7 +26,7 @@
     "chat:mrtr-test": "deno test --config=../deno.json --allow-read --allow-write --allow-net=127.0.0.1 --allow-env=LOG,MCP_AUTH_PROVIDER,MCP_AUTH_AUDIENCE,MCP_AUTH_RESOURCE,MCP_AUTH_DOMAIN,MCP_AUTH_ISSUER,MCP_AUTH_JWKS_URI,MCP_AUTH_SCOPES,MCP_AUTH_RESOURCE_METADATA_URL e2e/chat-mrtr-server_e2e_test.ts",
     "runtime:check": "deno run --no-prompt src/application/runtime-check.ts",
     "verify": "deno task fmt && deno task lint && deno task check && deno task test && deno task runtime:check",
-    "package": "deno task runtime:check && deno task sidecar:compile && deno task chat:prepare && DENO_BIN=$(which deno) && PATH=\"$PWD/dist/helpers:$PATH\" \"$DENO_BIN\" desktop --no-prompt --deny-import -P=desktop --output=dist/CasysDigitalThread.app main.ts && deno run --no-prompt --allow-read=dist --allow-write=dist --allow-run=/usr/bin/plutil,/usr/bin/codesign,/usr/bin/clang,/bin/ln src/build/finalize-macos.ts dist/CasysDigitalThread.app"
+    "package": "deno task runtime:check && deno task sidecar:compile && deno task chat:prepare && DENO_BIN=$(which deno) && PATH=\"$PWD/dist/helpers:$PATH\" \"$DENO_BIN\" desktop --no-prompt --deny-import -P=desktop --output=dist/CasysDigitalThread main.ts && deno run --no-prompt --allow-read=dist --allow-write=dist --allow-run=/usr/bin/plutil,/usr/bin/codesign,/usr/bin/clang,/bin/ln src/build/finalize-macos.ts dist/CasysDigitalThread.app"
   },
   "permissions": {
     "desktop": {

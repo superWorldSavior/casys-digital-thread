@@ -80,3 +80,71 @@ Deno.test("file store load isolates an invalid artifact manifest", async () => {
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("file store preserves standalone whiteboard membership without assigning legacy chats", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-project-membership-" });
+  try {
+    const now = new Date("2026-09-30T12:00:00.000Z");
+    const original = archivedEntry("conversation:member", now.toISOString());
+    await new FileChatConversationStore({ root, now: () => now }).save([
+      { ...original, workspaceProjectId: "project-a" },
+      archivedEntry("conversation:legacy", now.toISOString()),
+    ]);
+    const loaded = await new FileChatConversationStore({ root, now: () => now }).load();
+    const member = loaded.find((entry) => entry.id === original.id);
+    assertEquals(member?.workspaceProjectId, "project-a");
+    assertEquals(member?.projectId, undefined);
+    assertEquals(member?.kind, "standalone");
+    assertEquals(member?.sessionKey, original.sessionKey);
+    assertEquals(member?.mcpId, original.mcpId);
+    assertEquals(member?.toolResults, original.toolResults);
+    assertEquals(
+      loaded.find((entry) => entry.id === "conversation:legacy")?.workspaceProjectId,
+      undefined,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("post-commit artifact cleanup failure preserves membership and retries next save", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-postcommit-gc-" });
+  const warning = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => warnings.push(args);
+  try {
+    const now = new Date("2026-09-30T12:00:00.000Z");
+    const staleDigest = "ef".repeat(32);
+    let failRemoval = true;
+    const store = new FileChatConversationStore({
+      root,
+      now: () => now,
+      removeArtifactFile: async (path) => {
+        if (failRemoval) {
+          failRemoval = false;
+          throw new Error(`private artifact path: ${path}`);
+        }
+        await Deno.remove(path);
+      },
+    });
+    await store.saveArtifact(staleDigest, new Uint8Array([1, 2, 3]));
+    const member = {
+      ...archivedEntry("conversation:member", now.toISOString()),
+      workspaceProjectId: "project-a",
+    };
+    await store.save([member]);
+    assertEquals((await store.load())[0]?.workspaceProjectId, "project-a");
+    assertEquals(await store.loadArtifact(staleDigest), new Uint8Array([1, 2, 3]));
+    assertEquals(warnings, [[
+      "Chat artifact cleanup failed after commit; retrying on next save.",
+    ]]);
+
+    await store.save([member]);
+    assertEquals(await store.loadArtifact(staleDigest), undefined);
+    assertEquals((await store.load())[0]?.workspaceProjectId, "project-a");
+    assertEquals(warnings.length, 1);
+  } finally {
+    console.warn = warning;
+    await Deno.remove(root, { recursive: true });
+  }
+});

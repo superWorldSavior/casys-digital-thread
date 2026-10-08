@@ -2086,6 +2086,8 @@ interface FocusedWorkspaceHandlerOptions {
   readonly focus: CockpitFocusStore;
   readonly workspaceId: string;
   readonly native: (request: Request) => Promise<Response>;
+  /** Desktop chat can open without selecting a project; project APIs cannot. */
+  readonly allowUnfocusedDocument?: boolean;
   readonly projectCatalog?: () => Promise<NativeWorkbenchProjectCatalog>;
   readonly projectDiscovery?: () => Promise<NativeWorkbenchProjectDiscovery>;
 }
@@ -2107,6 +2109,14 @@ export function createFocusedWorkspaceHandler(
     if (url.pathname === "/api/projects") return await options.native(request);
     if (url.pathname === "/api/project-discovery") {
       return await options.native(request);
+    }
+    if (
+      options.allowUnfocusedDocument &&
+      (url.pathname === "/" || url.pathname === "/native-workbench.html")
+    ) {
+      return await options.native(
+        url.pathname === "/" ? request : requestAtRoot(request),
+      );
     }
     const focus = await options.focus.get(options.workspaceId);
     if (!focus) {
@@ -2314,8 +2324,11 @@ function workbenchCsp(appScriptNonce?: string): string {
   const scriptSource = appScriptNonce === undefined
     ? "script-src 'self'"
     : `script-src 'self' 'nonce-${appScriptNonce}'`;
+  // WebKit applies the creator's frame-ancestors policy to its Blob App
+  // frames. Same-origin ancestors admit that bootstrap while keeping
+  // cross-origin embedding blocked; the App sandbox remains opaque.
   return "default-src 'none'; base-uri 'none'; form-action 'none'; " +
-    `frame-ancestors 'none'; object-src 'none'; ${scriptSource}; ` +
+    `frame-ancestors 'self'; object-src 'none'; ${scriptSource}; ` +
     "style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
     "font-src 'self'; connect-src 'self'; frame-src blob:; media-src 'none'; " +
     "worker-src 'none'; manifest-src 'none'";

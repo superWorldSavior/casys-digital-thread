@@ -66,6 +66,11 @@ jobs:
       - name: Build and verify the native Workbench
         run: deno task verify:thread:presentation
 
+      - name: Set up the pinned Desktop runtime
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+
       - name: Verify desktop packaging pins
         working-directory: desktop
         run: deno task runtime:check

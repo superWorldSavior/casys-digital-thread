@@ -14,8 +14,8 @@ const EXECUTABLE =
 function input(overrides: Record<string, unknown> = {}) {
   return {
     manifest: rawManifest,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "macOS" as const,
     env: (name: string) => name === "HOME" ? "/Users/ada" : undefined,

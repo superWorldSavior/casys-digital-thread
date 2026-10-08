@@ -145,6 +145,8 @@ export interface ChatConversationDto {
   readonly id: string;
   readonly kind: ChatConversationKind;
   readonly projectId?: string;
+  /** Shared whiteboard membership only; standalone runtime authority is unchanged. */
+  readonly workspaceProjectId?: string;
   readonly title: string;
   readonly status: ChatConversationStatus;
   readonly createdAt: string;
@@ -186,6 +188,15 @@ export interface ChatToolViewerDto {
    */
   readonly archive?: ChatViewerArchiveDto;
 }
+
+/** Exact retained result placed on a project's whiteboard through its owning chat. */
+export interface ChatProjectViewerDto {
+  readonly workspaceProjectId: string;
+  readonly owningConversationId: string;
+  readonly viewer: ChatToolViewerDto;
+}
+
+export const CHAT_PROJECT_VIEWERS_MAX = 2_000;
 
 /** One saved artifact file: identity plus its retention state. */
 export interface ChatViewerArtifactDto {
@@ -330,6 +341,8 @@ export interface ChatSnapshotDto {
   readonly conversations: readonly ChatConversationDto[];
   readonly connectableMcps: readonly ChatConnectableMcpDto[];
   readonly selectedConversationId?: string;
+  /** Retained viewer identities across member chats, including unselected chats. */
+  readonly projectViewers?: readonly ChatProjectViewerDto[];
   readonly error?: string;
   /** Store retention backing saved work; absent when unbounded. */
   readonly retention?: ChatRetentionDto;
@@ -345,7 +358,16 @@ export type ChatCommandRequest =
     readonly command: "conversation.create";
     /** Present for a project conversation, absent for a standalone chat. */
     readonly projectId?: string;
+    /** Standalone chat membership in a shared project whiteboard. */
+    readonly workspaceProjectId?: string;
     readonly title?: string;
+  }
+  | {
+    readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
+    readonly requestId: string;
+    readonly command: "conversation.attach-project";
+    readonly conversationId: string;
+    readonly workspaceProjectId: string;
   }
   | {
     readonly protocol: typeof DESKTOP_CHAT_PROTOCOL;
@@ -540,12 +562,19 @@ export function parseChatCommandRequest(value: unknown): ChatCommandRequest {
     const projectId = input.projectId === undefined
       ? undefined
       : parseCasysProjectId(input.projectId);
+    const workspaceProjectId = input.workspaceProjectId === undefined
+      ? undefined
+      : parseCasysProjectId(input.workspaceProjectId);
+    if (projectId !== undefined && workspaceProjectId !== undefined) {
+      throw new TypeError("projectId and workspaceProjectId are mutually exclusive");
+    }
     const title = optionalText(input.title, "title", 120);
     return Object.freeze({
       protocol: DESKTOP_CHAT_PROTOCOL,
       requestId,
       command,
       ...(projectId === undefined ? {} : { projectId }),
+      ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
       ...(title === undefined ? {} : { title }),
     });
   }
@@ -566,6 +595,15 @@ export function parseChatCommandRequest(value: unknown): ChatCommandRequest {
     });
   }
   const conversationId = opaqueId(input.conversationId, "conversationId");
+  if (command === "conversation.attach-project") {
+    return Object.freeze({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId,
+      command,
+      conversationId,
+      workspaceProjectId: parseCasysProjectId(input.workspaceProjectId),
+    });
+  }
   if (command === "viewer.archive-read") {
     return Object.freeze({
       protocol: DESKTOP_CHAT_PROTOCOL,
@@ -964,6 +1002,9 @@ export function parseChatSnapshotDto(value: unknown): ChatSnapshotDto {
   const conversations = Object.freeze(
     input.conversations.map(parseConversationDto),
   );
+  const projectViewers = input.projectViewers === undefined
+    ? undefined
+    : parseProjectViewers(input.projectViewers);
   if (
     !Array.isArray(input.connectableMcps) || input.connectableMcps.length > 32
   ) {
@@ -988,6 +1029,7 @@ export function parseChatSnapshotDto(value: unknown): ChatSnapshotDto {
     protocol: DESKTOP_CHAT_PROTOCOL,
     host,
     conversations,
+    ...(projectViewers === undefined ? {} : { projectViewers }),
     connectableMcps,
     ...(selectedConversationId === undefined ? {} : { selectedConversationId }),
     ...(error === undefined ? {} : { error }),
@@ -1103,6 +1145,12 @@ function parseConversationDto(value: unknown): ChatConversationDto {
   const projectId = input.projectId === undefined
     ? undefined
     : parseCasysProjectId(input.projectId);
+  const workspaceProjectId = input.workspaceProjectId === undefined
+    ? undefined
+    : parseCasysProjectId(input.workspaceProjectId);
+  if (workspaceProjectId !== undefined && kind !== "standalone") {
+    throw new TypeError("workspaceProjectId requires a standalone conversation");
+  }
   if (kind === "project" && projectId === undefined) {
     throw new TypeError("project conversation requires a projectId");
   }
@@ -1126,6 +1174,7 @@ function parseConversationDto(value: unknown): ChatConversationDto {
     id: opaqueId(input.id, "conversation id"),
     kind,
     ...(projectId === undefined ? {} : { projectId }),
+    ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
     title: text(input.title, "conversation title", 120),
     status,
     createdAt: isoDate(input.createdAt, "createdAt"),
@@ -1136,6 +1185,32 @@ function parseConversationDto(value: unknown): ChatConversationDto {
     ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
     viewers: Object.freeze(input.viewers.map(parseToolViewerDto)),
   });
+}
+
+function parseProjectViewers(value: unknown): readonly ChatProjectViewerDto[] {
+  if (!Array.isArray(value) || value.length > CHAT_PROJECT_VIEWERS_MAX) {
+    throw new TypeError("project viewers are invalid");
+  }
+  const identities = new Set<string>();
+  return Object.freeze(value.map((entry) => {
+    const input = record(entry, "project viewer");
+    const workspaceProjectId = parseCasysProjectId(input.workspaceProjectId);
+    const owningConversationId = opaqueId(input.owningConversationId, "viewer owner");
+    const rawViewer = record(input.viewer, "project tool viewer");
+    const viewer = parseToolViewerDto({
+      viewerId: opaqueId(rawViewer.viewerId, "viewer id"),
+      toolCallId: rawViewer.toolCallId,
+      messageId: rawViewer.messageId,
+      tool: rawViewer.tool,
+      appUri: rawViewer.appUri,
+    });
+    const identity = JSON.stringify([owningConversationId, viewer.viewerId]);
+    if (identities.has(identity)) {
+      throw new TypeError("project viewer ids must be unique");
+    }
+    identities.add(identity);
+    return Object.freeze({ workspaceProjectId, owningConversationId, viewer });
+  }));
 }
 
 function parseToolViewerDto(value: unknown): ChatToolViewerDto {

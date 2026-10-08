@@ -216,13 +216,17 @@ export function createDenoWorkbenchHost(
   cwd: string,
   layoutProfile: ControlPlaneLayoutProfile,
 ): WorkbenchHost {
-  const command = (args: readonly string[], stdout: "piped" | "null") =>
+  const command = (
+    args: readonly string[],
+    stdout: "piped" | "null",
+    stdin: "piped" | "null" = "piped",
+  ) =>
     new Deno.Command(helperPath, {
       args: [...args],
       cwd,
       env: {},
       clearEnv: true,
-      stdin: "piped",
+      stdin,
       stdout,
       stderr: "null",
     });
@@ -231,10 +235,14 @@ export function createDenoWorkbenchHost(
       fetch: globalThis.fetch.bind(globalThis),
       createLaunchId: () => crypto.randomUUID(),
       async runInspect() {
-        const output = await command([
-          "inspect",
-          `--layout-profile=${layoutProfile}`,
-        ], "piped").output();
+        const output = await command(
+          [
+            "inspect",
+            `--layout-profile=${layoutProfile}`,
+          ],
+          "piped",
+          "null",
+        ).output();
         if (!output.success) throw new Error("Workbench inspect failed.");
         return new TextDecoder().decode(output.stdout);
       },

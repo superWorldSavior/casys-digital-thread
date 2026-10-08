@@ -24,6 +24,7 @@ import { hasDistinctProjectObjectiveStatement } from "./navigation-model.ts";
 import { ProjectWorkRibbon } from "./work.tsx";
 import { ProjectReviewAppHandoffs } from "./control-center.tsx";
 import { buildProjectReviewRecords } from "./review-decision-model.ts";
+import { ProjectWhiteboardFrame } from "./project-whiteboard-frame.tsx";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 
@@ -133,6 +134,11 @@ export function DocumentaryBaselineWorkbench({
             </section>
 
             <ProjectWorkRibbon project={project} />
+
+            <ProjectWhiteboardFrame
+              key={project.project.id}
+              projectId={project.project.id}
+            />
 
             <ProjectReviewAppHandoffs
               project={project}

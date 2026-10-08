@@ -88,6 +88,104 @@ Deno.test("snapshot accepts a project conversation with a valid projectId", () =
   assertEquals(parsed.conversations[0]?.projectId, "proj-123");
 });
 
+Deno.test("snapshot associates standalone MCP work with a project without changing its kind", () => {
+  const parsed = parseChatSnapshotDto(
+    snapshotWith(conversation({
+      workspaceProjectId: "coffee-machine",
+      mcp: {
+        id: "erpnext",
+        displayName: "ERPNext",
+        status: "connected",
+        tools: ["erpnext_company_list"],
+      },
+    })),
+  );
+  const entry = parsed.conversations[0];
+  assertEquals(entry?.workspaceProjectId, "coffee-machine");
+  assertEquals(entry?.kind, "standalone");
+  assertEquals(entry?.projectId, undefined);
+  assertEquals(entry?.mcp?.id, "erpnext");
+});
+
+Deno.test("snapshot rejects workspace association on an engineering conversation", () => {
+  assertThrows(
+    () =>
+      parseChatSnapshotDto(snapshotWith(conversation({
+        kind: "project",
+        projectId: "coffee-machine",
+        workspaceProjectId: "coffee-machine",
+      }))),
+    TypeError,
+  );
+});
+
+Deno.test("snapshot rejects malformed workspace project identifiers", () => {
+  for (const workspaceProjectId of ["", "not a project!", "../coffee-machine", null]) {
+    assertThrows(
+      () => parseChatSnapshotDto(snapshotWith(conversation({ workspaceProjectId }))),
+      TypeError,
+    );
+  }
+});
+
+Deno.test("conversation creation keeps engineering and workspace project selectors exclusive", () => {
+  const base = {
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "create-associated",
+    command: "conversation.create",
+  };
+  const standalone = parseChatCommandRequest({
+    ...base,
+    workspaceProjectId: "coffee-machine",
+  });
+  if (standalone.command !== "conversation.create") throw new Error("wrong branch");
+  assertEquals(standalone.workspaceProjectId, "coffee-machine");
+  assertEquals(standalone.projectId, undefined);
+  const engineering = parseChatCommandRequest({ ...base, projectId: "coffee-machine" });
+  if (engineering.command !== "conversation.create") throw new Error("wrong branch");
+  assertEquals(engineering.projectId, "coffee-machine");
+  assertEquals(engineering.workspaceProjectId, undefined);
+  assertThrows(
+    () =>
+      parseChatCommandRequest({
+        ...base,
+        projectId: "coffee-machine",
+        workspaceProjectId: "coffee-machine",
+      }),
+    TypeError,
+  );
+  assertThrows(
+    () => parseChatCommandRequest({ ...base, workspaceProjectId: "../invalid" }),
+    TypeError,
+  );
+});
+
+Deno.test("project attachment requires an exact conversation and valid project identifier", () => {
+  const request = {
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-project-1",
+    command: "conversation.attach-project",
+    conversationId: "conv-1",
+    workspaceProjectId: "coffee-machine",
+  };
+  const parsed = parseChatCommandRequest(request);
+  if (parsed.command !== "conversation.attach-project") throw new Error("wrong branch");
+  assertEquals(parsed.conversationId, "conv-1");
+  assertEquals(parsed.workspaceProjectId, "coffee-machine");
+  for (
+    const overrides of [
+      { conversationId: "../conv-1" },
+      { workspaceProjectId: "not a project!" },
+      { workspaceProjectId: undefined },
+    ]
+  ) {
+    assertThrows(
+      () => parseChatCommandRequest({ ...request, ...overrides }),
+      TypeError,
+    );
+  }
+});
+
 Deno.test("snapshot rejects a standalone conversation carrying a projectId", () => {
   assertThrows(
     () =>
@@ -477,6 +575,128 @@ function archivedViewer(overrides: Record<string, unknown> = {}) {
     },
   };
 }
+
+function projectViewer(overrides: Record<string, unknown> = {}) {
+  return {
+    workspaceProjectId: "coffee-machine",
+    owningConversationId: "conv-owner",
+    viewer: { ...archivedViewer(), viewerId: "capture-1" },
+    ...overrides,
+  };
+}
+
+Deno.test("snapshot accepts older hosts without a project viewer projection", () => {
+  const parsed = parseChatSnapshotDto(snapshotWith(conversation()));
+  assertEquals(parsed.projectViewers, undefined);
+  const empty = parseChatSnapshotDto({
+    ...snapshotWith(conversation()),
+    projectViewers: [],
+  });
+  assertEquals(empty.projectViewers, []);
+});
+
+Deno.test("project viewer projection retains explicit owners and strips result sidecars", () => {
+  const parsed = parseChatSnapshotDto({
+    ...snapshotWith(conversation()),
+    projectViewers: [projectViewer({
+      rawResult: { secret: "must-not-cross" },
+      viewer: {
+        ...archivedViewer(),
+        viewerId: "capture-1",
+        input: { secret: "must-not-cross" },
+        result: { secret: "must-not-cross" },
+      },
+    })],
+  });
+  assertEquals(parsed.projectViewers, [{
+    workspaceProjectId: "coffee-machine",
+    owningConversationId: "conv-owner",
+    viewer: {
+      viewerId: "capture-1",
+      toolCallId: "tool-call-1",
+      messageId: "message-1",
+      tool: "build123d_export",
+      appUri: "ui://mcp-build123d/results-viewer",
+    },
+  }]);
+});
+
+Deno.test("project viewer identity belongs to the owner even when another chat reuses call ids", () => {
+  const parsed = parseChatSnapshotDto({
+    ...snapshotWith(conversation()),
+    projectViewers: [
+      projectViewer(),
+      projectViewer({ owningConversationId: "conv-another-owner" }),
+    ],
+  });
+  assertEquals(parsed.projectViewers?.map((entry) => entry.owningConversationId), [
+    "conv-owner",
+    "conv-another-owner",
+  ]);
+  assertEquals(parsed.projectViewers?.map((entry) => entry.viewer.viewerId), [
+    "capture-1",
+    "capture-1",
+  ]);
+  assertThrows(
+    () =>
+      parseChatSnapshotDto({
+        ...snapshotWith(conversation()),
+        projectViewers: [projectViewer(), projectViewer()],
+      }),
+    TypeError,
+  );
+});
+
+Deno.test("project viewer projection rejects invalid identities and missing stable captures", () => {
+  for (
+    const entry of [
+      projectViewer({ workspaceProjectId: "../coffee-machine" }),
+      projectViewer({ owningConversationId: "../conv-owner" }),
+      projectViewer({ owningConversationId: undefined }),
+      projectViewer({
+        viewer: { ...archivedViewer(), viewerId: "capture with spaces" },
+      }),
+      projectViewer({ viewer: archivedViewer() }),
+      projectViewer({
+        viewer: {
+          ...archivedViewer(),
+          viewerId: "capture-1",
+          appUri: "https://host/app",
+        },
+      }),
+    ]
+  ) {
+    assertThrows(
+      () =>
+        parseChatSnapshotDto({
+          ...snapshotWith(conversation()),
+          projectViewers: [entry],
+        }),
+      TypeError,
+    );
+  }
+});
+
+Deno.test("project viewer projection enforces its bounded aggregate budget", () => {
+  const entries = Array.from({ length: 2_001 }, (_, index) =>
+    projectViewer({
+      viewer: { ...archivedViewer(), viewerId: `capture-${index}` },
+    }));
+  const base = snapshotWith(conversation());
+  assertEquals(
+    parseChatSnapshotDto({ ...base, projectViewers: entries.slice(0, 2_000) })
+      .projectViewers?.length,
+    2_000,
+  );
+  assertThrows(
+    () => parseChatSnapshotDto({ ...base, projectViewers: entries }),
+    TypeError,
+  );
+  assertThrows(
+    () => parseChatSnapshotDto({ ...base, projectViewers: {} }),
+    TypeError,
+  );
+});
 
 Deno.test("snapshot carries retention and per-version saved-work archives", () => {
   const parsed = parseChatSnapshotDto({

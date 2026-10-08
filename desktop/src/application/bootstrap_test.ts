@@ -12,8 +12,8 @@ function bootstrap(
 ) {
   return bootstrapDesktopShell({
     manifest: rawManifest,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "macOS",
     env: (name) => name === "HOME" ? "/Users/ada" : undefined,
@@ -39,6 +39,13 @@ Deno.test("bootstrap produces an honest degraded shell without a lifecycle obser
 Deno.test("bootstrap keeps runtime or application-support failure recovery-required", () => {
   assertEquals(
     bootstrap({ actualDenoVersion: "2.9.1" }).status,
+    "recovery-required",
+  );
+  assertEquals(
+    bootstrap({
+      actualDenoVersion: "2.9.2",
+      actualDesktopRuntimeVersion: "2.9.2",
+    }).status,
     "recovery-required",
   );
   assertEquals(
@@ -74,8 +81,8 @@ Deno.test("bootstrap carries only the sanitized control-plane projection", () =>
 Deno.test("bootstrap facts gate the sidecar on exact host and component pins", () => {
   const facts = inspectDesktopBootstrap({
     manifest: rawManifest,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "macOS",
     env: (name) => name === "HOME" ? "/Users/ada" : undefined,
@@ -86,7 +93,7 @@ Deno.test("bootstrap facts gate the sidecar on exact host and component pins", (
   const wrongRuntime = inspectDesktopBootstrap({
     manifest: rawManifest,
     actualDenoVersion: "2.9.1",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "macOS",
     env: (name) => name === "HOME" ? "/Users/ada" : undefined,
@@ -102,8 +109,8 @@ Deno.test("bootstrap facts gate the sidecar on exact host and component pins", (
   controlPlane.version = "0.2.1";
   const wrongPin = inspectDesktopBootstrap({
     manifest: wrongComponent,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: wrongComponent.product.version,
     platform: "macOS",
     env: (name) => name === "HOME" ? "/Users/ada" : undefined,
@@ -113,8 +120,8 @@ Deno.test("bootstrap facts gate the sidecar on exact host and component pins", (
 
   const closedLinuxLayout = inspectDesktopBootstrap({
     manifest: rawManifest,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "Linux",
     env: (name) =>
@@ -130,8 +137,8 @@ Deno.test("bootstrap facts gate the sidecar on exact host and component pins", (
 
   const linuxHomeFallback = inspectDesktopBootstrap({
     manifest: rawManifest,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: rawManifest.product.version,
     platform: "Linux",
     env: (name) => name === "HOME" ? "/home/ada" : undefined,
@@ -145,8 +152,8 @@ Deno.test("bootstrap facts gate the sidecar on exact host and component pins", (
   wrongProduct.product.identifier = "io.example.other-product";
   const wrongProductFacts = inspectDesktopBootstrap({
     manifest: wrongProduct,
-    actualDenoVersion: "2.9.2",
-    actualDesktopRuntimeVersion: "2.9.2",
+    actualDenoVersion: rawManifest.runtime.denoVersion,
+    actualDesktopRuntimeVersion: rawManifest.runtime.desktopRuntimeVersion,
     actualProductVersion: wrongProduct.product.version,
     platform: "macOS",
     env: (name) => name === "HOME" ? "/Users/ada" : undefined,

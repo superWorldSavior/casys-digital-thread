@@ -1,4 +1,10 @@
 import { SECTION_LABEL } from "../ui/cockpit.tsx";
+import {
+  type ProjectWhiteboardHostLease,
+  type ProjectWhiteboardRect,
+  projectWhiteboardRevealTransform,
+  registerProjectWhiteboardHost,
+} from "../ui/project-whiteboard-host.ts";
 import { cn } from "../lib/utils.ts";
 import {
   whiteboardFlowCable,
@@ -778,6 +784,48 @@ export function OverviewThreadHero({
   const heroRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
+  const projectHostRef = useRef<HTMLDivElement>(null);
+  const projectHostLease = useRef<ProjectWhiteboardHostLease>();
+  const revealProjectWindow = (rect: ProjectWhiteboardRect) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    markTouched();
+    setWhiteboardTransform(projectWhiteboardRevealTransform({
+      width: viewport.clientWidth,
+      height: viewport.clientHeight,
+    }, rect));
+  };
+  useLayoutEffect(() => {
+    const element = projectHostRef.current;
+    const viewport = viewportRef.current;
+    if (!projectId || !element || !viewport) return;
+    const lease = registerProjectWhiteboardHost(projectId, {
+      element,
+      viewport,
+      transform: whiteboardTransform,
+      worldSize: whiteboardWorldSize,
+      reveal: revealProjectWindow,
+    });
+    projectHostLease.current = lease;
+    return () => {
+      lease.dispose();
+      if (projectHostLease.current === lease) {
+        projectHostLease.current = undefined;
+      }
+    };
+  }, [projectId]);
+  useLayoutEffect(() => {
+    const element = projectHostRef.current;
+    const viewport = viewportRef.current;
+    if (!element || !viewport) return;
+    projectHostLease.current?.update({
+      element,
+      viewport,
+      transform: whiteboardTransform,
+      worldSize: whiteboardWorldSize,
+      reveal: revealProjectWindow,
+    });
+  }, [projectId, whiteboardTransform, whiteboardWorldSize]);
   const fitWhiteboardRef = useRef<() => void>(() => undefined);
   const dragRef = useRef<OverviewViewerDragState>();
   const resizeRef = useRef<OverviewViewerResizeState>();
@@ -1661,7 +1709,7 @@ export function OverviewThreadHero({
   ) => {
     if (
       (event.target as Element).closest(
-        ".overview-thread-viewer, .overview-thread-hull-monitor",
+        ".overview-thread-viewer, .overview-thread-hull-monitor, [data-project-whiteboard-host]",
       )
     ) return;
     const viewport = viewportRef.current;
@@ -1692,7 +1740,7 @@ export function OverviewThreadHero({
     const target = event.target as Element;
     if (
       target.closest(
-        "button, [role='button'], .overview-thread-viewer, .overview-thread-hull-monitor",
+        "button, [role='button'], .overview-thread-viewer, .overview-thread-hull-monitor, [data-project-whiteboard-host]",
       )
     ) return;
     markTouched();
@@ -2106,6 +2154,7 @@ export function OverviewThreadHero({
         <div
           ref={viewportRef}
           className="overview-thread-viewport"
+          tabIndex={-1}
           data-whiteboard-grid="true"
           aria-label="Digital thread whiteboard"
           style={overviewWhiteboardViewportStyle(whiteboardTransform)}
@@ -2353,6 +2402,17 @@ export function OverviewThreadHero({
                 </div>
               )}
           </div>
+          <div
+            ref={projectHostRef}
+            className="project-whiteboard-host"
+            data-project-whiteboard-host={projectId}
+            style={{
+              width: whiteboardWorldSize.width,
+              height: whiteboardWorldSize.height,
+              transform:
+                `translate3d(${whiteboardTransform.x}px, ${whiteboardTransform.y}px, 0) scale(${whiteboardTransform.k})`,
+            }}
+          />
           {(viewers.length > 0 ||
             (monitoredGroup && monitoredGeometry)) && (
             <div

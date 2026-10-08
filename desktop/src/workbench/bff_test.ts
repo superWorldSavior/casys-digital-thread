@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.14";
+import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.14";
 import { FileCockpitFocusStore } from "../../../src/adapters/project/file-cockpit-focus-store.ts";
 import { FileEngineeringProjectRevisionStore } from "../../../src/adapters/shared/stores/engineering-project-store.ts";
 import { validateEngineeringProjectSnapshot } from "../../../src/domain/project/engineering-project-validation.ts";
@@ -9,6 +9,54 @@ import {
   PACKAGED_VIEWER_APP_REGISTRY_PATH,
 } from "./bff.ts";
 import { WORKBENCH_ACCESS_HEADER, WORKBENCH_WORKSPACE_ID } from "./contracts.ts";
+
+Deno.test("packaged Workbench opens its native document on a fresh profile without creating project state", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-packaged-unfocused-" });
+  try {
+    const profile = `${root}/profile`;
+    const uiAssetDirectory = `${root}/ui`;
+    await Deno.mkdir(profile);
+    await Deno.mkdir(`${uiAssetDirectory}/assets`, { recursive: true });
+    await Deno.writeTextFile(
+      `${uiAssetDirectory}/native-workbench.html`,
+      `<html><head><script type="module" src="./assets/native-workbench-test.js"></script></head><body><div id="native-preview"></div></body></html>`,
+    );
+    await Deno.writeTextFile(
+      `${uiAssetDirectory}/assets/native-workbench-test.js`,
+      "export const ready = true;\n",
+    );
+    const token = "c".repeat(64);
+    const handler = createPackagedWorkbenchBff(token, profile, { uiAssetDirectory });
+    const headers = { [WORKBENCH_ACCESS_HEADER]: token };
+    assertEquals((await handler(new Request("http://127.0.0.1/"))).status, 404);
+    for (const path of ["/", "/native-workbench.html"]) {
+      const page = await handler(new Request(`http://127.0.0.1${path}`, { headers }));
+      assertEquals(page.status, 200);
+      const html = await page.text();
+      assertStringIncludes(html, 'id="native-preview"');
+      assertStringIncludes(html, "./assets/native-workbench-test.js");
+      assertEquals(html.includes("Cockpit awaiting project context"), false);
+    }
+    const script = await handler(
+      new Request("http://127.0.0.1/assets/native-workbench-test.js", { headers }),
+    );
+    assertEquals(script.status, 200);
+    assertEquals(await script.text(), "export const ready = true;\n");
+    const project = await handler(
+      new Request("http://127.0.0.1/api/thread/workbench", { headers }),
+    );
+    assertEquals(project.status, 409);
+    assertEquals((await project.json()).error, "cockpit_focus_not_selected");
+    const catalog = await handler(
+      new Request("http://127.0.0.1/api/projects", { headers }),
+    );
+    assertEquals(catalog.status, 200);
+    assertEquals((await catalog.json()).projects, []);
+    assertEquals(await Array.fromAsync(Deno.readDir(profile)), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("packaged Workbench reaches v2 project discovery without changing v1 catalog", async () => {
   const root = await Deno.makeTempDir({

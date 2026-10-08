@@ -15,7 +15,7 @@ packager.
 ## Current behavior
 
 - Product `0.4.0` and Chat Host `0.6.0`, Workbench `0.3.0`, Deno and Deno Desktop
-  runtime `2.9.2`, and control plane server `0.2.0` are exact pins. The WebView engine
+  runtime `2.9.6`, and control plane server `0.2.0` are exact pins. The WebView engine
   remains OS-owned and is labelled that way in the manifest.
 - Before any helper process is considered, Desktop validates the embedded manifest,
   observed Deno/Desktop/product versions, selected finite platform application-support
@@ -193,7 +193,7 @@ on private loopback `:5176`. `sidecar:test` additionally exercises the older con
 plane on `:3020` and therefore requires that port to be free. `chat:test` and
 `chat:mrtr-test` exercise the separate Chat Host and server-validated MRTR path.
 
-Deno Desktop and config-file permission sets are experimental in Deno 2.9.2. The ad-hoc
+Deno Desktop and config-file permission sets are experimental in Deno 2.9.6. The ad-hoc
 signature proves local bundle integrity; it is not a Developer ID signature or a
 notarized public release.
 

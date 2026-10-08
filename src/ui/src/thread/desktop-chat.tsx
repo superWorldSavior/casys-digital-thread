@@ -1,5 +1,5 @@
 import { Dialog as ArkDialog } from "@ark-ui/react/dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, JSX } from "react";
 import { Badge, type BadgeProps } from "../ui/badge.tsx";
 import { Button, buttonVariants } from "../ui/button.tsx";
@@ -33,9 +33,11 @@ import {
   type ChatViewerDispatch,
   ChatViewerPanel,
 } from "./chat-viewer-panel.tsx";
-import { ChatCanvas } from "./chat-canvas.tsx";
-import { ChatCanvasSaveQueue } from "./chat-canvas-save-queue.ts";
+import { startDesktopChatPolling } from "./desktop-chat-polling.ts";
+import { ChatProjectWhiteboard } from "./chat-project-whiteboard.tsx";
+import { requestProjectWhiteboard } from "../ui/project-whiteboard-host.ts";
 import { ChatSessionWorkList } from "./chat-session-work.tsx";
+import { hasDesktopChatBindings } from "./desktop-chat-runtime.ts";
 import {
   type CatalogueCommandResponse,
   type CatalogueEntryDto,
@@ -100,43 +102,63 @@ export function DesktopChat(
     projectId.length > 0;
   const fixedProjectPanel = fixedPanelAvailable && wideDesktop;
   const compactModal = fixedPanelAvailable
-    ? smallProjectModal
+    ? smallProjectModal && !nativeChatAvailable
     : fallbackCompactModal;
   const projectSheet = fixedPanelAvailable && !wideDesktop && !compactModal;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const previousPresentationRef = useRef({ open, compactModal });
+  const revealWorkbenchOnClose = useRef(false);
   const [snapshot, setSnapshot] = useState<ChatSnapshotDto>();
   const [selectedId, setSelectedId] = useState<string | null>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [showCatalogue, setShowCatalogue] = useState(false);
+  const [projectViewerRequest, setProjectViewerRequest] = useState<{
+    projectId: string;
+    owningConversationId: string;
+    viewerId: string;
+    sequence: number;
+  }>();
+  const refreshInFlight = useRef<Promise<void>>();
   const nativeCatalogueAvailable = bindings !== undefined &&
     typeof bindings.casysCatalogueSnapshot === "function" &&
     typeof bindings.casysCatalogueCommand === "function";
 
-  const refresh = useCallback(async () => {
-    if (!bindings) return;
-    try {
-      const next = parseChatSnapshotDto(
-        await bindings.casysChatSnapshot({
-          protocol: DESKTOP_CHAT_PROTOCOL,
-          ...(typeof selectedId === "string"
-            ? { conversationId: selectedId }
-            : {}),
-        }),
-      );
-      setSnapshot(next);
-      setSelectedId((current) => {
-        if (current === null) return null;
-        if (current !== undefined) return current;
-        return next.conversations.find((conversation) =>
-          conversation.projectId === projectId
-        )?.id;
-      });
-      setError(next.error);
-    } catch (cause) {
-      setError(readError(cause));
-    }
+  const refresh = useCallback((): Promise<void> => {
+    if (!bindings) return Promise.resolve();
+    if (refreshInFlight.current !== undefined) return refreshInFlight.current;
+    const pending = (async () => {
+      try {
+        const next = parseChatSnapshotDto(
+          await bindings.casysChatSnapshot({
+            protocol: DESKTOP_CHAT_PROTOCOL,
+            ...(typeof selectedId === "string"
+              ? { conversationId: selectedId }
+              : {}),
+          }),
+        );
+        setSnapshot(next);
+        setSelectedId((current) => {
+          if (current === null) return null;
+          if (current !== undefined) return current;
+          return next.conversations.find((conversation) =>
+            projectId !== undefined &&
+            (conversation.projectId === projectId ||
+              conversation.workspaceProjectId === projectId)
+          )?.id;
+        });
+        setError(next.error);
+      } catch (cause) {
+        setError(readError(cause));
+      }
+    })();
+    refreshInFlight.current = pending;
+    void pending.finally(() => {
+      if (refreshInFlight.current === pending) {
+        refreshInFlight.current = undefined;
+      }
+    });
+    return pending;
   }, [bindings, projectId, selectedId]);
 
   useEffect(() => setSelectedId(undefined), [projectId]);
@@ -144,10 +166,17 @@ export function DesktopChat(
   useEffect(() => {
     const previous = previousPresentationRef.current;
     previousPresentationRef.current = { open, compactModal };
-    if (previous.open && !open && !previous.compactModal) {
+    if (previous.open && !open && revealWorkbenchOnClose.current) {
+      revealWorkbenchOnClose.current = false;
+      if (projectId !== undefined) {
+        requestProjectWhiteboard(projectId);
+      } else {
+        globalThis.document?.getElementById("native-preview-content")?.focus();
+      }
+    } else if (previous.open && !open && !previous.compactModal) {
       triggerRef.current?.focus();
     }
-  }, [compactModal, open]);
+  }, [compactModal, open, projectId]);
 
   useEffect(() => {
     if (!open || fixedPanelAvailable || compactModal) return;
@@ -158,19 +187,21 @@ export function DesktopChat(
     return () => globalThis.removeEventListener("keydown", dismiss);
   }, [compactModal, fixedPanelAvailable, onOpenChange, open]);
 
-  useEffect(() => {
-    if (!bindings || !open) return;
-    void refresh();
-    const active = snapshot?.conversations.some((conversation) =>
+  const active =
+    snapshot?.conversations.some((conversation) =>
       conversation.status === "running" || conversation.status === "queued" ||
       conversation.pendingInteraction !== undefined
-    );
-    const timer = globalThis.setInterval(
-      () => void refresh(),
-      active ? 250 : 1_000,
-    );
-    return () => globalThis.clearInterval(timer);
-  }, [bindings, open, refresh, snapshot?.conversations]);
+    ) ?? false;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  useEffect(() => {
+    if (!bindings || !open) return;
+    return startDesktopChatPolling({
+      refresh,
+      intervalMs: () => activeRef.current ? 250 : 1_000,
+    });
+  }, [bindings, open, refresh]);
 
   const command = useCallback(
     async (request: DesktopChatBindingCommandRequest) => {
@@ -196,37 +227,6 @@ export function DesktopChat(
     },
     [bindings, refresh],
   );
-
-  const commandRef = useRef(command);
-  commandRef.current = command;
-  const canvasQueues = useRef(new Map<string, ChatCanvasSaveQueue>());
-  const selectionToken = useRef(0);
-  const canvasQueueFor = useCallback((conversationId: string) => {
-    let queue = canvasQueues.current.get(conversationId);
-    if (queue === undefined) {
-      queue = new ChatCanvasSaveQueue(
-        async (layout) => {
-          const response = await commandRef.current({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            command: "canvas.set-layout",
-            conversationId,
-            layout,
-          });
-          if (!response?.ok) {
-            throw new Error(response?.error ?? "Canvas layout failed to save.");
-          }
-        },
-        (message) => setError(message),
-      );
-      canvasQueues.current.set(conversationId, queue);
-    }
-    return queue;
-  }, []);
-
-  useEffect(() => () => {
-    for (const queue of canvasQueues.current.values()) void queue.flush();
-  }, []);
 
   // Header attach path: same prepare-then-enable contract as the catalogue
   // card. This surface carries no availability snapshot, so prepare always
@@ -272,292 +272,346 @@ export function DesktopChat(
 
   // The legacy command field is named toolCallId; the host resolves the
   // retained viewerId carried in it to avoid native call-id collisions.
-  const viewerDispatch: ChatViewerDispatch | undefined = bindings === undefined
-    ? undefined
-    : {
-      openViewer: async (
-        conversationId: string,
-        viewerId: string,
-      ): Promise<ChatViewerSessionDto> => {
-        const response = parseChatCommandResponse(
-          await bindings.casysChatCommand({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            command: "viewer.open",
-            conversationId,
-            toolCallId: viewerId,
-          }),
-        );
-        if (!response.ok || response.viewer === undefined) {
-          throw new Error(response.error ?? "Viewer failed to open.");
-        }
-        return response.viewer;
+  const viewerDispatch = useMemo<ChatViewerDispatch | undefined>(
+    () =>
+      bindings === undefined ? undefined : {
+        openViewer: async (
+          conversationId: string,
+          viewerId: string,
+        ): Promise<ChatViewerSessionDto> => {
+          const response = parseChatCommandResponse(
+            await bindings.casysChatCommand({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              command: "viewer.open",
+              conversationId,
+              toolCallId: viewerId,
+            }),
+          );
+          if (!response.ok || response.viewer === undefined) {
+            throw new Error(response.error ?? "Viewer failed to open.");
+          }
+          return response.viewer;
+        },
+        callViewerTool: async (
+          conversationId: string,
+          viewerId: string,
+          name: string,
+          args: unknown,
+        ): Promise<ChatViewerJson> => {
+          const response = parseChatCommandResponse(
+            await bindings.casysChatCommand({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              command: "viewer.tool-call",
+              conversationId,
+              toolCallId: viewerId,
+              name,
+              arguments: parseChatViewerArguments(args),
+            }),
+          );
+          if (!response.ok || response.viewerResult === undefined) {
+            throw new Error(response.error ?? "Viewer tool call failed.");
+          }
+          return response.viewerResult;
+        },
+        readViewerResource: async (
+          conversationId: string,
+          viewerId: string,
+          uri: string,
+        ): Promise<ChatViewerResourceDto> => {
+          const response = parseChatCommandResponse(
+            await bindings.casysChatCommand({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              command: "viewer.resource-read",
+              conversationId,
+              toolCallId: viewerId,
+              uri,
+            }),
+          );
+          if (!response.ok || response.viewerResource === undefined) {
+            throw new Error(response.error ?? "Viewer resource read failed.");
+          }
+          return response.viewerResource;
+        },
+        fetchApp: async (
+          server: string,
+          uri: string,
+          fingerprint: string,
+        ): Promise<ChatViewerAppBytesDto> => {
+          const response = parseChatViewerAppFetchResponse(
+            await bindings.casysChatViewerApp({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              server,
+              uri,
+              fingerprint,
+            }),
+          );
+          if (!response.ok || response.app === undefined) {
+            throw new Error(response.error ?? "Viewer App fetch failed.");
+          }
+          return response.app;
+        },
+        saveFile: async (
+          fileName: string,
+          data: string,
+        ): Promise<{ readonly path: string; readonly bytes: number }> => {
+          const response = parseChatSaveFileResponse(
+            await bindings.casysChatSaveFile({
+              protocol: DESKTOP_CHAT_PROTOCOL,
+              requestId: requestId(),
+              fileName,
+              data,
+            }),
+          );
+          if (
+            !response.ok || response.path === undefined ||
+            response.bytes === undefined
+          ) {
+            throw new Error(response.error ?? "File export failed.");
+          }
+          return { path: response.path, bytes: response.bytes };
+        },
       },
-      callViewerTool: async (
-        conversationId: string,
-        viewerId: string,
-        name: string,
-        args: unknown,
-      ): Promise<ChatViewerJson> => {
-        const response = parseChatCommandResponse(
-          await bindings.casysChatCommand({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            command: "viewer.tool-call",
-            conversationId,
-            toolCallId: viewerId,
-            name,
-            arguments: parseChatViewerArguments(args),
-          }),
-        );
-        if (!response.ok || response.viewerResult === undefined) {
-          throw new Error(response.error ?? "Viewer tool call failed.");
-        }
-        return response.viewerResult;
-      },
-      readViewerResource: async (
-        conversationId: string,
-        viewerId: string,
-        uri: string,
-      ): Promise<ChatViewerResourceDto> => {
-        const response = parseChatCommandResponse(
-          await bindings.casysChatCommand({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            command: "viewer.resource-read",
-            conversationId,
-            toolCallId: viewerId,
-            uri,
-          }),
-        );
-        if (!response.ok || response.viewerResource === undefined) {
-          throw new Error(response.error ?? "Viewer resource read failed.");
-        }
-        return response.viewerResource;
-      },
-      fetchApp: async (
-        server: string,
-        uri: string,
-        fingerprint: string,
-      ): Promise<ChatViewerAppBytesDto> => {
-        const response = parseChatViewerAppFetchResponse(
-          await bindings.casysChatViewerApp({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            server,
-            uri,
-            fingerprint,
-          }),
-        );
-        if (!response.ok || response.app === undefined) {
-          throw new Error(response.error ?? "Viewer App fetch failed.");
-        }
-        return response.app;
-      },
-      saveFile: async (
-        fileName: string,
-        data: string,
-      ): Promise<{ readonly path: string; readonly bytes: number }> => {
-        const response = parseChatSaveFileResponse(
-          await bindings.casysChatSaveFile({
-            protocol: DESKTOP_CHAT_PROTOCOL,
-            requestId: requestId(),
-            fileName,
-            data,
-          }),
-        );
-        if (
-          !response.ok || response.path === undefined ||
-          response.bytes === undefined
-        ) {
-          throw new Error(response.error ?? "File export failed.");
-        }
-        return { path: response.path, bytes: response.bytes };
-      },
-    };
+    [bindings],
+  );
 
   const standaloneConversations =
     snapshot?.conversations.filter((conversation) =>
-      conversation.kind === "standalone"
+      conversation.kind === "standalone" &&
+      conversation.workspaceProjectId === undefined
     ) ?? [];
   const projectConversations =
     snapshot?.conversations.filter((conversation) =>
-      conversation.kind === "project" && conversation.projectId === projectId
+      projectId !== undefined &&
+      (conversation.projectId === projectId &&
+          conversation.kind === "project" ||
+        conversation.workspaceProjectId === projectId)
     ) ?? [];
   const selected = selectedConversation(snapshot, selectedId, projectId);
   const selectConversation = useCallback((id: string | null) => {
-    const token = ++selectionToken.current;
-    const queue = selected?.id === undefined
-      ? undefined
-      : canvasQueues.current.get(selected.id);
-    if (queue === undefined || !queue.hasPending) {
-      setSelectedId(id);
-      return;
-    }
-    void queue.flush().then((saved) => {
-      if (token !== selectionToken.current) return;
-      if (saved) setSelectedId(id);
-      else setError(queue.error ?? "Canvas layout failed to save.");
-    });
-  }, [selected?.id]);
+    setSelectedId(id);
+  }, []);
+  const openWorkbench = () => {
+    revealWorkbenchOnClose.current = true;
+    if (projectId !== undefined) requestProjectWhiteboard(projectId);
+    onOpenChange(false);
+  };
   const panel = (
     <ArkDialog.Content className="desktop-chat-panel">
-      <header className="desktop-chat-head">
-        <div className="min-w-0">
-          <p className="desktop-chat-eyebrow">Agent workspace</p>
-          <ArkDialog.Title className="desktop-chat-title">
-            Chat
-          </ArkDialog.Title>
-          <ArkDialog.Description className="desktop-chat-description">
-            Standalone and project conversations.
-          </ArkDialog.Description>
+      <div className="desktop-chat-layout">
+        <ConversationRail
+          standalone={standaloneConversations}
+          project={projectConversations}
+          projectId={projectId}
+          selectedId={selected?.id}
+          onSelect={selectConversation}
+          interactive={nativeChatAvailable}
+        />
+        <div className="desktop-chat-main">
+          <header className="desktop-chat-head">
+            <div className="min-w-0">
+              <ArkDialog.Title className="desktop-chat-title">
+                {showCatalogue ? "Tools" : selected?.title ?? "New chat"}
+              </ArkDialog.Title>
+              <ArkDialog.Description className="sr-only">
+                Standalone and project conversations.
+              </ArkDialog.Description>
+            </div>
+            <div className="desktop-chat-head-actions">
+              <AgentSelector
+                profiles={snapshot?.agentProfiles ?? []}
+                defaultProfileId={snapshot?.defaultAgentProfileId}
+                activeProfileId={selected?.agentProfileId}
+                conversationId={selected?.id}
+                interactive={nativeChatAvailable}
+                command={command}
+              />
+              <Button
+                type="button"
+                variant={showCatalogue ? "secondary" : "ghost"}
+                size="sm"
+                className="h-8 px-2"
+                aria-pressed={showCatalogue}
+                onClick={() => setShowCatalogue((open) => !open)}
+              >
+                Tools
+              </Button>
+              {nativeChatAvailable && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2"
+                  onClick={openWorkbench}
+                >
+                  Workbench
+                </Button>
+              )}
+              <ArkDialog.CloseTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="desktop-chat-close h-8 px-2"
+                  aria-label={fixedPanelAvailable
+                    ? "Close project chat"
+                    : "Close chat"}
+                >
+                  Close
+                </Button>
+              </ArkDialog.CloseTrigger>
+            </div>
+          </header>
+          {!nativeChatAvailable
+            ? <BrowserPreviewUnavailable projectId={projectId} />
+            : showCatalogue && bindings !== undefined
+            ? (
+              <CatalogueView
+                bindings={bindings}
+                catalogueAvailable={nativeCatalogueAvailable}
+                conversation={selected}
+                busy={busy}
+                command={command}
+                onClose={() => setShowCatalogue(false)}
+              />
+            )
+            : selected
+            ? (
+              <Conversation
+                key={selected.id}
+                conversation={selected}
+                connectableMcps={snapshot?.connectableMcps ?? []}
+                busy={busy}
+                command={command}
+                onConnect={connectWithPrepare}
+                viewerDispatch={viewerDispatch}
+                retention={snapshot?.retention}
+                projectId={projectId}
+                onOpenWhiteboard={() => {
+                  if (projectId === undefined) return;
+                  requestProjectWhiteboard(projectId);
+                  if (!wideDesktop) {
+                    revealWorkbenchOnClose.current = true;
+                    onOpenChange(false);
+                  }
+                }}
+                onProjectViewer={(owningConversationId, viewerId) => {
+                  if (projectId === undefined) return;
+                  setProjectViewerRequest((previous) => ({
+                    projectId,
+                    owningConversationId,
+                    viewerId,
+                    sequence: (previous?.sequence ?? 0) + 1,
+                  }));
+                  requestProjectWhiteboard(projectId);
+                  if (!wideDesktop) {
+                    revealWorkbenchOnClose.current = true;
+                    onOpenChange(false);
+                  }
+                }}
+              />
+            )
+            : (
+              <NewConversation
+                projectId={projectId}
+                busy={busy}
+                command={command}
+              />
+            )}
+          {error && <p className="desktop-chat-error" role="alert">{error}</p>}
+          <footer className="desktop-chat-foot">
+            <details className="desktop-chat-evidence-details">
+              <summary>Session work</summary>
+              <p>
+                Chat history and saved results are session work. Authoritative
+                Thread/CAS evidence is recorded separately.
+              </p>
+            </details>
+          </footer>
         </div>
-        <div className="desktop-chat-head-actions">
-          <AgentSelector
-            profiles={snapshot?.agentProfiles ?? []}
-            defaultProfileId={snapshot?.defaultAgentProfileId}
-            activeProfileId={selected?.agentProfileId}
-            conversationId={selected?.id}
-            interactive={nativeChatAvailable}
-            command={command}
-          />
-          <Button
-            type="button"
-            variant={showCatalogue ? "secondary" : "ghost"}
-            size="sm"
-            className="h-8 px-2"
-            aria-pressed={showCatalogue}
-            onClick={() => setShowCatalogue((open) => !open)}
-          >
-            Tools
-          </Button>
-          <ArkDialog.CloseTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="desktop-chat-close h-8 px-2"
-              aria-label={fixedPanelAvailable
-                ? "Close project chat"
-                : "Close chat"}
-            >
-              Close
-            </Button>
-          </ArkDialog.CloseTrigger>
-        </div>
-      </header>
-      <ConversationRail
-        standalone={standaloneConversations}
-        project={projectConversations}
-        projectId={projectId}
-        selectedId={selected?.id}
-        onSelect={selectConversation}
-        interactive={nativeChatAvailable}
-      />
-      {!nativeChatAvailable
-        ? <BrowserPreviewUnavailable projectId={projectId} />
-        : showCatalogue && bindings !== undefined
-        ? (
-          <CatalogueView
-            bindings={bindings}
-            catalogueAvailable={nativeCatalogueAvailable}
-            conversation={selected}
-            busy={busy}
-            command={command}
-            onClose={() => setShowCatalogue(false)}
-          />
-        )
-        : selected
-        ? (
-          <Conversation
-            key={selected.id}
-            conversation={selected}
-            canvasQueue={canvasQueueFor(selected.id)}
-            connectableMcps={snapshot?.connectableMcps ?? []}
-            busy={busy}
-            command={command}
-            onConnect={connectWithPrepare}
-            viewerDispatch={viewerDispatch}
-            retention={snapshot?.retention}
-          />
-        )
-        : (
-          <NewConversation
-            projectId={projectId}
-            busy={busy}
-            command={command}
-          />
-        )}
-      {error && <p className="desktop-chat-error" role="alert">{error}</p>}
-      <footer className="desktop-chat-foot">
-        Transcript history is separate from authoritative Thread/CAS evidence.
-      </footer>
+      </div>
     </ArkDialog.Content>
   );
   return (
-    // Zag installs modal effects only when its open state is entered. Remount
-    // when the responsive presentation changes so those effects are rebuilt.
-    <ArkDialog.Root
-      key={compactModal ? "modal" : "panel"}
-      open={open}
-      onOpenChange={(details) => onOpenChange(details.open)}
-      ids={{
-        content: "desktop-chat-panel",
-        title: "desktop-chat-title",
-        description: "desktop-chat-description",
-      }}
-      modal={compactModal}
-      trapFocus={compactModal}
-      preventScroll={compactModal}
-      closeOnInteractOutside={compactModal}
-      closeOnEscape={!fixedPanelAvailable || compactModal}
-    >
-      <aside
-        className={`desktop-chat${open ? " is-open" : ""}${
-          nativeChatAvailable ? "" : " is-unavailable"
-        }`}
-        aria-label="Agent chat"
-        data-chat-runtime={nativeChatAvailable ? "native" : "browser-preview"}
-        data-chat-presentation={fixedProjectPanel
-          ? "project-panel"
-          : projectSheet
-          ? "project-sheet"
-          : compactModal
-          ? "modal"
-          : "panel"}
+    <>
+      {nativeChatAvailable && projectId !== undefined &&
+        viewerDispatch !== undefined && (
+        <ChatProjectWhiteboard
+          key={projectId}
+          projectId={projectId}
+          viewers={snapshot?.projectViewers}
+          dispatch={viewerDispatch}
+          requestedViewer={projectViewerRequest?.projectId === projectId
+            ? projectViewerRequest
+            : undefined}
+        />
+      )}
+      {/* Zag rebuilds modal effects when the responsive presentation changes. */}
+      <ArkDialog.Root
+        key={compactModal ? "modal" : "panel"}
+        open={open}
+        onOpenChange={(details) => onOpenChange(details.open)}
+        ids={{
+          content: "desktop-chat-panel",
+          title: "desktop-chat-title",
+          description: "desktop-chat-description",
+        }}
+        modal={compactModal}
+        trapFocus={compactModal}
+        preventScroll={compactModal}
+        closeOnInteractOutside={compactModal}
+        closeOnEscape={!fixedPanelAvailable || compactModal}
       >
-        <ArkDialog.Trigger
-          ref={triggerRef}
-          className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "desktop-chat-toggle h-10 rounded-lg bg-background px-3 shadow-lg",
-          )}
-          aria-expanded={open}
-          aria-controls="desktop-chat-panel"
+        <aside
+          className={`desktop-chat${open ? " is-open" : ""}${
+            nativeChatAvailable ? "" : " is-unavailable"
+          }${fixedPanelAvailable ? "" : " is-standalone"}`}
+          aria-label="Agent chat"
+          data-chat-runtime={nativeChatAvailable ? "native" : "browser-preview"}
+          data-chat-presentation={fixedProjectPanel
+            ? "project-panel"
+            : projectSheet
+            ? "project-sheet"
+            : compactModal
+            ? "modal"
+            : "panel"}
         >
-          <span>Chat</span>
-          {!nativeChatAvailable && (
-            <Badge
-              variant="warning"
-              className="desktop-chat-availability font-mono text-[9px] uppercase tracking-[0.08em]"
-            >
-              preview
-            </Badge>
-          )}
-          {selected?.status === "running" && (
-            <Badge
-              variant="success"
-              className="desktop-chat-live font-mono text-[9px] uppercase tracking-[0.08em]"
-            >
-              live
-            </Badge>
-          )}
-        </ArkDialog.Trigger>
-        <ArkDialog.Backdrop className="desktop-chat-backdrop" />
-        <ArkDialog.Positioner className="desktop-chat-positioner">
-          {panel}
-        </ArkDialog.Positioner>
-      </aside>
-    </ArkDialog.Root>
+          <ArkDialog.Trigger
+            ref={triggerRef}
+            className={cn(
+              buttonVariants({ variant: "outline", size: "sm" }),
+              "desktop-chat-toggle h-10 rounded-lg bg-background px-3 shadow-lg",
+            )}
+            aria-expanded={open}
+            aria-controls="desktop-chat-panel"
+          >
+            <span>Chat</span>
+            {!nativeChatAvailable && (
+              <Badge
+                variant="warning"
+                className="desktop-chat-availability font-mono text-[9px] uppercase tracking-[0.08em]"
+              >
+                preview
+              </Badge>
+            )}
+            {selected?.status === "running" && (
+              <Badge
+                variant="success"
+                className="desktop-chat-live font-mono text-[9px] uppercase tracking-[0.08em]"
+              >
+                live
+              </Badge>
+            )}
+          </ArkDialog.Trigger>
+          <ArkDialog.Backdrop className="desktop-chat-backdrop" />
+          <ArkDialog.Positioner className="desktop-chat-positioner">
+            {panel}
+          </ArkDialog.Positioner>
+        </aside>
+      </ArkDialog.Root>
+    </>
   );
 }
 
@@ -658,21 +712,23 @@ function ConversationRail({
         aria-pressed={!selectedId}
         onClick={() => onSelect(null)}
       >
-        + New
+        + New chat
       </Button>
-      <p className="desktop-chat-interaction-kind">Standalone</p>
-      {standalone.map((conversation) => (
-        <RailButton
-          key={conversation.id}
-          conversation={conversation}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          interactive={interactive}
-        />
-      ))}
+      <div className="desktop-chat-rail-group">
+        <p className="desktop-chat-rail-label">Conversations</p>
+        {standalone.map((conversation) => (
+          <RailButton
+            key={conversation.id}
+            conversation={conversation}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            interactive={interactive}
+          />
+        ))}
+      </div>
       {projectId !== undefined && (
-        <>
-          <p className="desktop-chat-interaction-kind">Project</p>
+        <div className="desktop-chat-rail-group">
+          <p className="desktop-chat-rail-label">Project</p>
           {project.map((conversation) => (
             <RailButton
               key={conversation.id}
@@ -682,7 +738,7 @@ function ConversationRail({
               interactive={interactive}
             />
           ))}
-        </>
+        </div>
       )}
     </nav>
   );
@@ -758,16 +814,24 @@ function NewConversation({
         busy={busy}
         command={command}
       />
-      <CreateConversationForm busy={busy} command={command} />
+      <CreateConversationForm
+        workspaceProjectId={projectId}
+        busy={busy}
+        command={command}
+      />
     </>
   );
 }
 
 function CreateConversationForm({
   projectId,
+  workspaceProjectId,
   busy,
   command,
-}: CommandProps & { readonly projectId?: string }): JSX.Element {
+}: CommandProps & {
+  readonly projectId?: string;
+  readonly workspaceProjectId?: string;
+}): JSX.Element {
   const standalone = projectId === undefined;
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -776,20 +840,22 @@ function CreateConversationForm({
       requestId: requestId(),
       command: "conversation.create",
       ...(projectId === undefined ? {} : { projectId }),
+      ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
     });
   };
   return (
     <form
-      className="desktop-chat-new rounded-lg border border-dashed border-border bg-card p-4 shadow-sm"
+      className="desktop-chat-new"
       onSubmit={submit}
     >
       {standalone
         ? (
           <>
-            <p className="desktop-chat-interaction-kind">No project attached</p>
+            <h2>What would you like to work on?</h2>
             <p>
-              A normal conversation with the configured agent. No brief, model,
-              or project is required; connect a tool when the task needs one.
+              {workspaceProjectId === undefined
+                ? "Start a chat. Add a tool whenever you need one."
+                : "Work with a tool on this project's shared whiteboard."}
             </p>
             <Button
               type="submit"
@@ -798,18 +864,18 @@ function CreateConversationForm({
               disabled={busy}
               data-autofocus
             >
-              Start standalone conversation
+              Start a chat
             </Button>
           </>
         )
         : (
           <>
             <p className="desktop-chat-interaction-kind">
-              Current projected project
+              Current project
             </p>
             <strong>{projectId}</strong>
             <p>
-              This server-projected project is fixed for the new conversation.
+              This conversation stays attached to this project.
             </p>
             <Button
               type="submit"
@@ -835,23 +901,76 @@ interface CommandProps {
 
 function Conversation({
   conversation,
-  canvasQueue,
   connectableMcps,
   busy,
   command,
   onConnect,
   viewerDispatch,
   retention,
+  projectId,
+  onOpenWhiteboard,
+  onProjectViewer,
 }: CommandProps & {
   readonly conversation: ChatConversationDto;
-  readonly canvasQueue: ChatCanvasSaveQueue;
   readonly connectableMcps: readonly ChatConnectableMcpDto[];
   readonly onConnect: (conversationId: string, mcpId: string) => void;
   readonly viewerDispatch: ChatViewerDispatch | undefined;
   readonly retention: ChatRetentionDto | undefined;
+  readonly projectId: string | undefined;
+  readonly onOpenWhiteboard: () => void;
+  readonly onProjectViewer: (
+    owningConversationId: string,
+    viewerId: string,
+  ) => void;
 }): JSX.Element {
+  const boardProjectId = conversation.workspaceProjectId ??
+    conversation.projectId;
+  const usesProjectWhiteboard = boardProjectId !== undefined &&
+    boardProjectId === projectId;
   const [text, setText] = useState("");
-  const [canvasOpen, setCanvasOpen] = useState(false);
+  const [focusedViewerId, setFocusedViewerId] = useState<string>();
+  const focusedViewer = conversation.viewers.find((viewer) =>
+    viewer.viewerId === focusedViewerId
+  );
+  const previewRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (!usesProjectWhiteboard && focusedViewerId !== undefined) {
+      previewRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [focusedViewerId, usesProjectWhiteboard]);
+  const knownViewerIds = useRef(
+    new Set(conversation.viewers.map((viewer) => viewer.viewerId)),
+  );
+  useEffect(() => {
+    const newViewers = conversation.viewers.filter((viewer) =>
+      !knownViewerIds.current.has(viewer.viewerId)
+    );
+    knownViewerIds.current = new Set(
+      conversation.viewers.map((viewer) => viewer.viewerId),
+    );
+    const newest = newViewers.at(-1);
+    if (newest !== undefined) {
+      setFocusedViewerId(newest.viewerId);
+    } else if (
+      focusedViewerId !== undefined &&
+      !knownViewerIds.current.has(focusedViewerId)
+    ) {
+      setFocusedViewerId(undefined);
+    }
+  }, [
+    conversation.viewers,
+    focusedViewerId,
+    usesProjectWhiteboard,
+    onProjectViewer,
+    conversation.id,
+  ]);
+  const focusViewer = (viewerId: string) => {
+    if (!conversation.viewers.some((viewer) => viewer.viewerId === viewerId)) {
+      return;
+    }
+    setFocusedViewerId(viewerId);
+    if (usesProjectWhiteboard) onProjectViewer(conversation.id, viewerId);
+  };
   const standalone = conversation.kind === "standalone";
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -866,167 +985,201 @@ function Conversation({
       text: message,
     });
   };
-  if (canvasOpen) {
-    return (
-      <div className="desktop-chat-conversation">
-        <ChatCanvas
-          conversationId={conversation.id}
-          conversation={conversation}
-          retention={retention}
-          viewers={conversation.viewers}
-          dispatch={viewerDispatch}
-          saveQueue={canvasQueue}
-          command={command}
-          onClose={() => setCanvasOpen(false)}
-        />
-      </div>
-    );
-  }
   return (
-    <div className="desktop-chat-conversation">
-      <div className="desktop-chat-project-line">
-        <span>{standalone ? "Standalone" : "Project"}</span>
-        <strong>
-          {standalone ? conversation.title : conversation.projectId}
-        </strong>
-        <Badge
-          variant={conversationStatusVariant(conversation.status)}
-          className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
-        >
-          {conversation.status}
-        </Badge>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setCanvasOpen(true)}
-        >
-          Open canvas
-        </Button>
-      </div>
-      {standalone && (
-        <McpAttachment
-          conversation={conversation}
-          connectableMcps={connectableMcps}
-          busy={busy}
-          command={command}
-          onConnect={onConnect}
-        />
-      )}
-      {standalone && (
-        <ChatSessionWorkList
-          conversation={conversation}
-          retention={retention}
-          dispatch={viewerDispatch}
-          command={command}
-          sendMessage={(text) =>
-            void command({
-              protocol: DESKTOP_CHAT_PROTOCOL,
-              requestId: requestId(),
-              command: "message.send",
-              conversationId: conversation.id,
-              text,
-            })}
-        />
-      )}
-      <ol className="desktop-chat-messages" aria-live="polite">
-        {conversation.messages.length === 0 && (
-          <li className="desktop-chat-empty">
-            {standalone
-              ? "Ask anything. Connect a tool below when the task needs one."
-              : "Ask about project intent, evidence, or a registered operation."}
-          </li>
-        )}
-        {conversation.messages.map((message) => (
-          <li
-            key={message.id}
-            className={`is-${message.role} is-${message.kind}`}
+    <div className="desktop-chat-workspace">
+      <div className="desktop-chat-conversation">
+        <div className="desktop-chat-project-line">
+          {!standalone && <span>Project · {conversation.projectId}</span>}
+          <Badge
+            variant={conversationStatusVariant(conversation.status)}
+            className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
           >
-            <span>
-              {message.role === "user"
-                ? "You"
-                : message.role === "assistant"
-                ? "Agent"
-                : "Host"}
-            </span>
-            <p>{message.text}</p>
-            {viewerDispatch !== undefined && (
-              <ChatViewerPanel
-                conversationId={conversation.id}
-                viewers={conversation.viewers}
-                messageId={message.id}
-                dispatch={viewerDispatch}
-              />
-            )}
-          </li>
-        ))}
-      </ol>
-      {conversation.pendingInteraction && (
-        <Interaction
-          conversationId={conversation.id}
-          interaction={conversation.pendingInteraction}
-          busy={busy}
-          command={command}
-        />
-      )}
-      <form className="desktop-chat-composer" onSubmit={submit}>
-        <label htmlFor="desktop-chat-message">Message</label>
-        <textarea
-          id="desktop-chat-message"
-          value={text}
-          maxLength={32_000}
-          disabled={conversation.status === "closed"}
-          onChange={(event) => setText(event.currentTarget.value)}
-          placeholder={standalone
-            ? "Ask the agent anything…"
-            : "Ask the agent to review the current project…"}
-          rows={3}
-          data-autofocus
-        />
-        <div>
-          <Button
-            type="submit"
-            size="sm"
-            className="bg-brand text-white hover:bg-brand-strong"
-            disabled={busy || !text.trim() || conversation.status === "closed"}
-          >
-            Send
-          </Button>
-          {(conversation.status === "running" ||
-            conversation.status === "queued") && (
+            {conversation.status}
+          </Badge>
+          {usesProjectWhiteboard && (
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() =>
-                void command({
-                  protocol: DESKTOP_CHAT_PROTOCOL,
-                  requestId: requestId(),
-                  command: "turn.cancel",
-                  conversationId: conversation.id,
-                })}
+              onClick={onOpenWhiteboard}
             >
-              Cancel turn
+              Project whiteboard
             </Button>
           )}
-          {conversation.status !== "closed" && (
+          {standalone && conversation.workspaceProjectId === undefined &&
+            projectId !== undefined && (
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="sm"
+              disabled={busy}
               onClick={() =>
                 void command({
                   protocol: DESKTOP_CHAT_PROTOCOL,
                   requestId: requestId(),
-                  command: "conversation.close",
+                  command: "conversation.attach-project",
                   conversationId: conversation.id,
+                  workspaceProjectId: projectId,
                 })}
             >
-              Close conversation
+              Add to this project
             </Button>
           )}
         </div>
-      </form>
+        {standalone && (
+          <McpAttachment
+            conversation={conversation}
+            connectableMcps={connectableMcps}
+            busy={busy}
+            command={command}
+            onConnect={onConnect}
+          />
+        )}
+        {standalone && (
+          <details className="desktop-chat-saved-work">
+            <summary>
+              Saved work · {conversation.viewers.length} results
+            </summary>
+            <ChatSessionWorkList
+              conversation={conversation}
+              retention={retention}
+              dispatch={viewerDispatch}
+              command={command}
+              onOpenViewer={focusViewer}
+              sendMessage={(text) =>
+                void command({
+                  protocol: DESKTOP_CHAT_PROTOCOL,
+                  requestId: requestId(),
+                  command: "message.send",
+                  conversationId: conversation.id,
+                  text,
+                })}
+            />
+          </details>
+        )}
+        <ol className="desktop-chat-messages" aria-live="polite">
+          {conversation.messages.length === 0 && (
+            <li className="desktop-chat-empty">
+              {standalone
+                ? "What would you like to make or explore?"
+                : "Ask about project intent, evidence, or a registered operation."}
+            </li>
+          )}
+          {conversation.messages.map((message) => (
+            <li
+              key={message.id}
+              className={`is-${message.role} is-${message.kind}`}
+            >
+              <span>
+                {message.role === "user"
+                  ? "You"
+                  : message.role === "assistant"
+                  ? "Agent"
+                  : "Host"}
+              </span>
+              <p>{message.text}</p>
+              {conversation.viewers
+                .filter((viewer) => viewer.messageId === message.id)
+                .map((viewer) => (
+                  <Button
+                    key={viewer.viewerId}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="desktop-chat-result-link"
+                    aria-pressed={!usesProjectWhiteboard &&
+                      focusedViewerId === viewer.viewerId}
+                    onClick={() => focusViewer(viewer.viewerId)}
+                  >
+                    {usesProjectWhiteboard
+                      ? `Open ${viewer.tool} in project whiteboard`
+                      : `View ${viewer.tool} result`}
+                  </Button>
+                ))}
+            </li>
+          ))}
+          {!usesProjectWhiteboard && viewerDispatch !== undefined &&
+            focusedViewer !== undefined && (
+            <li ref={previewRef} className="desktop-chat-result-preview">
+              <ChatViewerPanel
+                key={`${conversation.id}:${focusedViewer.viewerId}`}
+                conversationId={conversation.id}
+                viewers={[focusedViewer]}
+                messageId={focusedViewer.messageId}
+                dispatch={viewerDispatch}
+                autoOpenViewerId={focusedViewer.viewerId}
+              />
+            </li>
+          )}
+        </ol>
+        {conversation.pendingInteraction && (
+          <Interaction
+            conversationId={conversation.id}
+            interaction={conversation.pendingInteraction}
+            busy={busy}
+            command={command}
+          />
+        )}
+        <form className="desktop-chat-composer" onSubmit={submit}>
+          <label htmlFor="desktop-chat-message">Message</label>
+          <textarea
+            id="desktop-chat-message"
+            value={text}
+            maxLength={32_000}
+            disabled={conversation.status === "closed"}
+            onChange={(event) => setText(event.currentTarget.value)}
+            placeholder={standalone
+              ? "Ask the agent anything…"
+              : "Ask the agent to review the current project…"}
+            rows={3}
+            data-autofocus
+          />
+          <div>
+            <Button
+              type="submit"
+              size="sm"
+              className="bg-brand text-white hover:bg-brand-strong"
+              disabled={busy || !text.trim() ||
+                conversation.status === "closed"}
+            >
+              Send
+            </Button>
+            {(conversation.status === "running" ||
+              conversation.status === "queued") && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void command({
+                    protocol: DESKTOP_CHAT_PROTOCOL,
+                    requestId: requestId(),
+                    command: "turn.cancel",
+                    conversationId: conversation.id,
+                  })}
+              >
+                Cancel turn
+              </Button>
+            )}
+            {conversation.status !== "closed" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  void command({
+                    protocol: DESKTOP_CHAT_PROTOCOL,
+                    requestId: requestId(),
+                    command: "conversation.close",
+                    conversationId: conversation.id,
+                  })}
+              >
+                Close conversation
+              </Button>
+            )}
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -1662,142 +1815,15 @@ function CatalogueEntryCard({
       conversationId: conversation.id,
     });
   return (
-    <section className={cn(CARD_SURFACE, "p-4 shadow-sm")}>
-      <div className="desktop-chat-project-line">
+    <section className={cn(CARD_SURFACE, "desktop-chat-tool-card")}>
+      <div className="desktop-chat-tool-head">
         <strong>{entry.displayName}</strong>
         <span>{entry.tagline}</span>
       </div>
-      <div className="desktop-chat-project-line">
-        <StateBadge label="Prepared" on={entry.availability.prepared} />
-        <StateBadge label="Running" on={entry.availability.running} />
-        <StateBadge label="Capable" on={entry.availability.capable} />
-        <Badge
-          variant={entry.availability.runtime === "error"
-            ? "destructive"
-            : "secondary"}
-          className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
-        >
-          {entry.availability.runtime}
-        </Badge>
-        <Badge
-          variant={entry.availability.engine === "ready"
-            ? "success"
-            : "warning"}
-          className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
-        >
-          engine {entry.availability.engine}
-        </Badge>
-        {entry.isDefault && (
-          <Badge
-            variant="secondary"
-            className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
-          >
-            default
-          </Badge>
-        )}
-      </div>
-      <p>{entry.description}</p>
-      <p className="desktop-chat-interaction-kind">Tools</p>
-      <ul>
-        {entry.tools.map((tool) => (
-          <li key={tool.name}>
-            <code>{tool.name}</code> — {tool.summary} In: {tool.inputs} Out:
-            {" "}
-            {tool.results}
-          </li>
-        ))}
-      </ul>
-      <p className="desktop-chat-interaction-kind">Examples</p>
-      <ul>
-        {entry.examples.map((example) => (
-          <li key={example.title}>
-            <strong>{example.title}.</strong> {example.summary}
-          </li>
-        ))}
-      </ul>
-      <p className="desktop-chat-interaction-kind">Viewers</p>
-      <ul>
-        {entry.viewers.map((viewer) => (
-          <li key={viewer.uri}>
-            {viewer.label} (<code>{viewer.uri}</code>) —{" "}
-            {viewer.hostSupport === "available"
-              ? "available in Casys"
-              : "planned"}
-            {viewer.note ? `: ${viewer.note}` : ""}
-          </li>
-        ))}
-      </ul>
-      <p className="desktop-chat-interaction-kind">Tested distribution</p>
-      <p>
-        {entry.distribution.version} ({entry.distribution.release}), revision
-        {" "}
-        <code>{entry.distribution.revision}</code>
-      </p>
-      <p className="desktop-chat-interaction-kind">Platforms</p>
-      <ul>
-        {entry.platforms.map((platform) => (
-          <li key={platform.id}>
-            {platform.id} — {platform.status}: {platform.note}
-          </li>
-        ))}
-      </ul>
-      <p>{entry.guidance}</p>
-      <p>
-        <small>{entry.availability.detail}</small>
-      </p>
-      <div className="desktop-chat-project-line">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy || acting !== null}
-          onClick={onPrepare}
-        >
-          {acting === `Prepare:${entry.id}` ? "Preparing…" : "Prepare"}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy || acting !== null}
-          onClick={onProbe}
-        >
-          Check
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy || acting !== null ||
-            entry.availability.runtime === "stopped"}
-          onClick={onStop}
-        >
-          {acting === `Stop:${entry.id}` ? "Stopping…" : "Stop"}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy || acting !== null}
-          onClick={onRestart}
-        >
-          {acting === `Restart:${entry.id}` ? "Restarting…" : "Restart"}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy || acting !== null}
-          aria-pressed={entry.isDefault}
-          onClick={onToggleDefault}
-        >
-          {entry.isDefault ? "Default ✓" : "Set default"}
-        </Button>
-      </div>
-      <div className="desktop-chat-project-line">
-        <span>This chat</span>
+      <p className="desktop-chat-tool-description">{entry.description}</p>
+      <div className="desktop-chat-tool-actions">
         {conversation === undefined && (
-          <span>Select or start a standalone chat to enable.</span>
+          <span>Open a chat to enable this tool.</span>
         )}
         {conversation?.kind === "project" && (
           <span>Project chats keep their fixed tool.</span>
@@ -1809,6 +1835,7 @@ function CatalogueEntryCard({
             variant="outline"
             size="sm"
             disabled={busyActing}
+            className="bg-brand text-white hover:bg-brand-strong"
             onClick={onEnable}
           >
             {enableLabel(
@@ -1860,6 +1887,7 @@ function CatalogueEntryCard({
               variant="outline"
               size="sm"
               disabled={busyActing}
+              className="bg-brand text-white hover:bg-brand-strong"
               onClick={onEnable}
             >
               {enableLabel("Retry")}
@@ -1877,6 +1905,140 @@ function CatalogueEntryCard({
         )}
       </div>
       {outcome && <p role="status">{outcome}</p>}
+      {entry.availability.runtime === "error" && (
+        <p className="desktop-chat-error" role="status">
+          Runtime error · {entry.availability.detail}
+        </p>
+      )}
+      <details className="desktop-chat-tool-details">
+        <summary>Tool details &amp; runtime</summary>
+        <div className="desktop-chat-project-line">
+          <StateBadge label="Prepared" on={entry.availability.prepared} />
+          <StateBadge label="Running" on={entry.availability.running} />
+          <StateBadge label="Capable" on={entry.availability.capable} />
+          <Badge
+            variant={entry.availability.runtime === "error"
+              ? "destructive"
+              : "secondary"}
+            className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
+          >
+            {entry.availability.runtime}
+          </Badge>
+          <Badge
+            variant={entry.availability.engine === "ready"
+              ? "success"
+              : "warning"}
+            className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
+          >
+            engine {entry.availability.engine}
+          </Badge>
+          {entry.isDefault && (
+            <Badge
+              variant="secondary"
+              className="desktop-chat-state font-mono text-[9px] uppercase tracking-[0.08em]"
+            >
+              default
+            </Badge>
+          )}
+        </div>
+        <p className="desktop-chat-interaction-kind">Tools</p>
+        <ul>
+          {entry.tools.map((tool) => (
+            <li key={tool.name}>
+              <code>{tool.name}</code> — {tool.summary} In: {tool.inputs} Out:
+              {" "}
+              {tool.results}
+            </li>
+          ))}
+        </ul>
+        <p className="desktop-chat-interaction-kind">Examples</p>
+        <ul>
+          {entry.examples.map((example) => (
+            <li key={example.title}>
+              <strong>{example.title}.</strong> {example.summary}
+            </li>
+          ))}
+        </ul>
+        <p className="desktop-chat-interaction-kind">Viewers</p>
+        <ul>
+          {entry.viewers.map((viewer) => (
+            <li key={viewer.uri}>
+              {viewer.label} (<code>{viewer.uri}</code>) —{" "}
+              {viewer.hostSupport === "available"
+                ? "available in Casys"
+                : "planned"}
+              {viewer.note ? `: ${viewer.note}` : ""}
+            </li>
+          ))}
+        </ul>
+        <p className="desktop-chat-interaction-kind">Tested distribution</p>
+        <p>
+          {entry.distribution.version} ({entry.distribution.release}), revision
+          {" "}
+          <code>{entry.distribution.revision}</code>
+        </p>
+        <p className="desktop-chat-interaction-kind">Platforms</p>
+        <ul>
+          {entry.platforms.map((platform) => (
+            <li key={platform.id}>
+              {platform.id} — {platform.status}: {platform.note}
+            </li>
+          ))}
+        </ul>
+        <p>{entry.guidance}</p>
+        <p>
+          <small>{entry.availability.detail}</small>
+        </p>
+        <div className="desktop-chat-project-line">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy || acting !== null}
+            onClick={onPrepare}
+          >
+            {acting === `Prepare:${entry.id}` ? "Preparing…" : "Prepare"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy || acting !== null}
+            onClick={onProbe}
+          >
+            Check
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy || acting !== null ||
+              entry.availability.runtime === "stopped"}
+            onClick={onStop}
+          >
+            {acting === `Stop:${entry.id}` ? "Stopping…" : "Stop"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy || acting !== null}
+            onClick={onRestart}
+          >
+            {acting === `Restart:${entry.id}` ? "Restarting…" : "Restart"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={busy || acting !== null}
+            aria-pressed={entry.isDefault}
+            onClick={onToggleDefault}
+          >
+            {entry.isDefault ? "Default ✓" : "Set default"}
+          </Button>
+        </div>
+      </details>
     </section>
   );
 }
@@ -1902,7 +2064,10 @@ function selectedConversation(
   if (selectedId === null || selectedId === undefined) return undefined;
   return snapshot?.conversations.find((conversation) =>
     conversation.id === selectedId &&
-    (conversation.kind === "standalone" || conversation.projectId === projectId)
+    (conversation.kind === "standalone" &&
+        (conversation.workspaceProjectId === undefined ||
+          conversation.workspaceProjectId === projectId) ||
+      conversation.projectId === projectId)
   );
 }
 
@@ -2039,12 +2204,7 @@ export function desktopChatRuntimeAvailable(): boolean {
 
 function desktopBindings(): DesktopBindings | undefined {
   const candidate = globalThis.bindings;
-  if (
-    typeof candidate !== "object" || candidate === null ||
-    typeof candidate.casysChatSnapshot !== "function" ||
-    typeof candidate.casysChatCommand !== "function"
-  ) return undefined;
-  return candidate;
+  return hasDesktopChatBindings(candidate) ? candidate : undefined;
 }
 
 function requestId(): string {

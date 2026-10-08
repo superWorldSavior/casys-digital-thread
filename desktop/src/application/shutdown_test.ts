@@ -138,43 +138,27 @@ Deno.test("an unsupported signal does not prevent the supported listener", () =>
   assertEquals(shutdowns, 1);
 });
 
-Deno.test("native close is prevented until drain succeeds and can retry", () => {
-  let listener: ((event: { preventDefault(): void }) => void) | undefined;
-  let closeCalls = 0;
+Deno.test("native close dispatches one shutdown request", () => {
+  let listener: (() => void) | undefined;
   let requests = 0;
-  let prevented = 0;
   const window = {
     addEventListener(
       _type: "close",
-      next: (event: { preventDefault(): void }) => void,
+      next: () => void,
     ) {
       listener = next;
     },
     removeEventListener() {
       listener = undefined;
     },
-    close() {
-      closeCalls += 1;
-      listener?.({ preventDefault: () => prevented++ });
-    },
   };
   const controller = installDesktopWindowClose(window, () => requests++);
 
-  listener?.({ preventDefault: () => prevented++ });
-  listener?.({ preventDefault: () => prevented++ });
-  assertEquals({ prevented, requests, closeCalls }, {
-    prevented: 2,
-    requests: 1,
-    closeCalls: 0,
-  });
-
-  controller.retry();
-  listener?.({ preventDefault: () => prevented++ });
-  assertEquals(requests, 2);
-  controller.complete();
-  assertEquals(closeCalls, 1);
-  assertEquals(prevented, 3);
+  listener?.();
+  listener?.();
+  assertEquals(requests, 1);
   controller.cleanup();
+  assertEquals(listener, undefined);
 });
 
 Deno.test("window drain keeps the server live after unresolved stop then terminates", async () => {

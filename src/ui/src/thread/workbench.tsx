@@ -6,6 +6,7 @@ import { Badge, type BadgeProps } from "../ui/badge.tsx";
 import { Button } from "../ui/button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card.tsx";
 import { Notice } from "../ui/notice.tsx";
+import { subscribeProjectWhiteboardRequest } from "../ui/project-whiteboard-host.ts";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -823,6 +824,16 @@ export function ThreadWorkbench({
     pushWorkspaceHash(projectViewHash(next));
     focusProjectWorkspace();
   };
+  const whiteboardNavigation = useRef(changeView);
+  whiteboardNavigation.current = changeView;
+  useEffect(() => {
+    const projectId = workbench?.project.project.id;
+    if (!projectId) return;
+    return subscribeProjectWhiteboardRequest(
+      projectId,
+      () => whiteboardNavigation.current("overview"),
+    );
+  }, [workbench?.project.project.id]);
 
   /**
    * Inspecter est une destination, pas un panneau qui se déplie n'importe où.

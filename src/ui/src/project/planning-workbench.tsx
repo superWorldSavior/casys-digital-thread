@@ -37,6 +37,7 @@ import {
 } from "./model.ts";
 import { ProjectReviewAppHandoffs } from "./control-center.tsx";
 import { buildProjectReviewRecords } from "./review-decision-model.ts";
+import { ProjectWhiteboardFrame } from "./project-whiteboard-frame.tsx";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 
@@ -171,6 +172,11 @@ export function PlanningWorkbench({
             </p>
           </div>
         </section>
+
+        <ProjectWhiteboardFrame
+          key={project.project.id}
+          projectId={project.project.id}
+        />
 
         {framing && framingStatus === "approved" && (
           <ProjectFraming

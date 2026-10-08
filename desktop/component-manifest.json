@@ -6,8 +6,8 @@
     "version": "0.4.0"
   },
   "runtime": {
-    "denoVersion": "2.9.2",
-    "desktopRuntimeVersion": "2.9.2",
+    "denoVersion": "2.9.6",
+    "desktopRuntimeVersion": "2.9.6",
     "backend": "webview",
     "backendVersionAuthority": "operating-system"
   },

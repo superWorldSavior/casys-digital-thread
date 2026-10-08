@@ -20,60 +20,42 @@ export interface DesktopDrainPorts {
   readonly exitProcess: (code: number) => void;
 }
 
-export interface DesktopWindowCloseEvent {
-  preventDefault(): void;
-}
-
 export interface DesktopWindowClosePort {
   addEventListener(
     type: "close",
-    listener: (event: DesktopWindowCloseEvent) => void,
+    listener: () => void,
   ): void;
   removeEventListener(
     type: "close",
-    listener: (event: DesktopWindowCloseEvent) => void,
+    listener: () => void,
   ): void;
-  close(): void;
 }
 
 export interface DesktopWindowCloseController {
-  /** Allow the next close event through and ask the OS window to close again. */
-  complete(): void;
-  /** A bounded drain failed; keep the window alive and accept another request. */
-  retry(): void;
   cleanup(): void;
 }
 
 /**
- * Converts the native close event into an explicit shutdown request. The first
- * event is always prevented. Only the owner can complete the close after its
- * bounded drain succeeds; a failed drain stays visible and can be retried.
+ * Converts the one-way native close notification into one shutdown request.
+ *
+ * Deno Desktop 2.9.6 removes the native window before dispatching this event;
+ * the JavaScript event is not cancelable and cannot be acknowledged or retried.
+ * Resource draining therefore happens after the window has closed, and the
+ * process owner must terminate explicitly once that bounded attempt settles.
  */
 export function installDesktopWindowClose(
   window: DesktopWindowClosePort,
   onShutdown: () => void,
 ): DesktopWindowCloseController {
-  let allowClose = false;
-  let requestInFlight = false;
+  let requested = false;
   let cleaned = false;
-  const listener = (event: DesktopWindowCloseEvent) => {
-    if (allowClose) return;
-    event.preventDefault();
-    if (requestInFlight) return;
-    requestInFlight = true;
+  const listener = () => {
+    if (requested) return;
+    requested = true;
     onShutdown();
   };
   window.addEventListener("close", listener);
   return Object.freeze({
-    complete(): void {
-      if (cleaned || allowClose) return;
-      allowClose = true;
-      window.close();
-    },
-    retry(): void {
-      if (cleaned || allowClose) return;
-      requestInFlight = false;
-    },
     cleanup(): void {
       if (cleaned) return;
       cleaned = true;

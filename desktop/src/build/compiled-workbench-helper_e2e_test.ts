@@ -10,6 +10,7 @@ import { validateEngineeringProjectSnapshot } from "../../../src/domain/project/
 import { COCKPIT_FOCUS_SCHEMA_VERSION } from "../../../src/domain/project/cockpit-focus.ts";
 import { PACKAGED_CONTROL_PLANE_ASSETS } from "../sidecar/embedded-assets.ts";
 import { materializeClosedWorkspace } from "../sidecar/workspace.ts";
+import { createDenoWorkbenchHost } from "../workbench/host.ts";
 import {
   WORKBENCH_ACCESS_HEADER,
   WORKBENCH_HANDSHAKE_SCHEMA,
@@ -20,6 +21,54 @@ import {
 
 const LAUNCH_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const decoder = new TextDecoder();
+
+Deno.test({
+  name: "native Workbench host inspects and owns the actual compiled helper",
+  ignore: Deno.build.os !== "darwin",
+  async fn() {
+    const desktopRoot = decodeURIComponent(
+      new URL("../../", import.meta.url).pathname,
+    ).replace(/\/$/u, "");
+    const helper = `${desktopRoot}/dist/helpers/${WORKBENCH_HELPER_NAME}`;
+    const launchCwd = await canonicalTempDir("casys-native-workbench-host-");
+    await materializeClosedWorkspace(
+      launchCwd,
+      "macos-application-support",
+      PACKAGED_CONTROL_PLANE_ASSETS,
+    );
+    const host = createDenoWorkbenchHost(
+      helper,
+      launchCwd,
+      "macos-application-support",
+    );
+    try {
+      // Exercise the production Deno.Command adapter, including its inspect
+      // call, rather than manually spawning the helper with different stdio.
+      const started = await host.start();
+      assertEquals(started.projection.lifecycle, "owned-ready");
+      if (started.session === undefined) {
+        throw new Error("The compiled Workbench did not publish its host session.");
+      }
+      const response = await fetch(`${started.session.origin}/api/projects`, {
+        headers: { [WORKBENCH_ACCESS_HEADER]: started.session.accessToken },
+      });
+      assertEquals(response.status, 200);
+      assertEquals((await response.json()).projects, []);
+      await host.stop();
+      const inspected = await runHelper(helper, launchCwd, [
+        "inspect",
+        "--layout-profile=macos-application-support",
+      ]);
+      assertEquals(inspected.success, true, decoder.decode(inspected.stderr));
+      const document = JSON.parse(decoder.decode(inspected.stdout));
+      assertEquals(document.lock, "free");
+      assertEquals(document.marker, null);
+    } finally {
+      await host.stop();
+      await Deno.remove(launchCwd, { recursive: true });
+    }
+  },
+});
 
 Deno.test({
   name:

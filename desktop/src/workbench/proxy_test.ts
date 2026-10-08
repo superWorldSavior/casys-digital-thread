@@ -11,7 +11,7 @@ const SESSION = { origin: WORKBENCH_ORIGIN, accessToken: TOKEN } as const;
 const APP_NONCE = "A".repeat(43);
 const DYNAMIC_WORKBENCH_CSP =
   "default-src 'none'; base-uri 'none'; form-action 'none'; " +
-  "frame-ancestors 'none'; object-src 'none'; " +
+  "frame-ancestors 'self'; object-src 'none'; " +
   `script-src 'self' 'nonce-${APP_NONCE}'; ` +
   "style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
   "font-src 'self'; connect-src 'self'; frame-src blob:; media-src 'none'; " +
@@ -98,11 +98,43 @@ Deno.test("Desktop Workbench proxy translates HEAD to a bodyless upstream GET", 
     response?.headers.get("content-security-policy") ?? "",
     `'nonce-${APP_NONCE}'`,
   );
+  assertEquals(
+    response?.headers.get("content-security-policy"),
+    DYNAMIC_WORKBENCH_CSP,
+  );
+  assertEquals(response?.headers.get("x-frame-options"), "DENY");
   assertFalse(
     (response?.headers.get("content-security-policy") ?? "").includes(
       "frame-src 'self'",
     ),
   );
+});
+
+Deno.test("Desktop Workbench proxy rejects an upstream policy permitting foreign ancestors", async () => {
+  const response = await proxyDesktopWorkbenchRequest(
+    new Request("http://desktop.local/native-workbench.html"),
+    {
+      session: SESSION,
+      fetchImpl: () =>
+        Promise.resolve(
+          new Response("document", {
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Content-Security-Policy": DYNAMIC_WORKBENCH_CSP.replace(
+                "frame-ancestors 'self'",
+                "frame-ancestors *",
+              ),
+            },
+          }),
+        ),
+    },
+  );
+  const policy = response?.headers.get("content-security-policy") ?? "";
+  assertStringIncludes(policy, "frame-ancestors 'self'");
+  assertStringIncludes(policy, "frame-src blob:");
+  assertFalse(policy.includes("frame-ancestors *"));
+  assertFalse(policy.includes("nonce-"));
+  assertEquals(response?.headers.get("x-frame-options"), "DENY");
 });
 
 Deno.test("Desktop Workbench proxy streams SSE and preserves only Last-Event-ID", async () => {

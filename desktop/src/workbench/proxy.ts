@@ -13,7 +13,8 @@ const EXACT_PATHS = new Set([
 
 const WORKBENCH_DOCUMENT_CSP =
   "default-src 'none'; base-uri 'none'; form-action 'none'; " +
-  "frame-ancestors 'none'; object-src 'none'; script-src 'self'; " +
+  // Keep the helper's WebKit-compatible Blob frame policy exactly pinned.
+  "frame-ancestors 'self'; object-src 'none'; script-src 'self'; " +
   "style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
   "font-src 'self'; connect-src 'self'; frame-src blob:; media-src 'none'; " +
   "worker-src 'none'; manifest-src 'none'";

@@ -17,7 +17,8 @@ const SECOND_LAUNCH_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const decoder = new TextDecoder();
 
 Deno.test({
-  name: "compiled macOS helper enforces lifecycle and symlink confinement",
+  name:
+    "compiled macOS helper starts with embedded assets, enforces lifecycle and symlink confinement",
   ignore: Deno.build.os !== "darwin",
   async fn() {
     const desktopRoot = decodeURIComponent(
@@ -60,6 +61,8 @@ async function proveSignalShutdown(helper: string): Promise<void> {
   const child = new Deno.Command(helper, {
     args: ["start", PROFILE_ARGUMENT, `--launch-id=${FIRST_LAUNCH_ID}`],
     cwd: launchCwd,
+    env: {},
+    clearEnv: true,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -72,6 +75,13 @@ async function proveSignalShutdown(helper: string): Promise<void> {
     assertEquals(handshake.schema, HANDSHAKE_SCHEMA);
     assertEquals(handshake.status, "ready");
     assertEquals(handshake.launchId, FIRST_LAUNCH_ID);
+
+    // This actual compiled server startup reads the packaged CalculiX STEP
+    // qualification fixture before publishing readiness. A source-checkout
+    // run or an include-string assertion cannot prove that asset survived
+    // compilation. The cwd and environment are the native launch contract.
+    const health = await fetch(new URL("/health", CONTROL_PLANE_ENDPOINT));
+    assertEquals(health.status, 200, await health.text());
 
     child.kill("SIGTERM");
     await drain(stdout);
@@ -168,6 +178,8 @@ async function proveDeepProjectStoreSymlinkRejected(
       `--launch-id=${SECOND_LAUNCH_ID}`,
     ],
     cwd: launchCwd,
+    env: {},
+    clearEnv: true,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -291,6 +303,8 @@ function runHelper(
   return new Deno.Command(helper, {
     args: [...args],
     cwd,
+    env: {},
+    clearEnv: true,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",

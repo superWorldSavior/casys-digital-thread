@@ -8,8 +8,15 @@ import {
   registerDesktopChatBindings,
 } from "./bindings.ts";
 import {
+  type ChatCommandRequest,
+  type ChatCommandResponse,
   type ChatConversationDto,
+  type ChatProjectViewerDto,
+  type ChatSnapshotDto,
+  type ChatToolViewerDto,
   DESKTOP_CHAT_PROTOCOL,
+  parseChatCommandResponse,
+  parseChatSnapshotDto,
 } from "../../../src/presentation/desktop/chat/contracts.ts";
 import type { ChatViewerBackend } from "./viewer-backend.ts";
 
@@ -645,6 +652,431 @@ Deno.test("unknown conversation ids are verified against the Host before selecti
   );
 });
 
+Deno.test("focused project aggregates unselected MCP viewers and excludes forged membership", async () => {
+  const a1: ChatConversationDto = {
+    ...standaloneConversation("conversation:a1", "A1", "coffee-machine"),
+    viewers: [projectViewer("conversation:a1", "coffee-machine").viewer],
+  };
+  const a2: ChatConversationDto = {
+    ...standaloneConversation("conversation:a2", "A2", "coffee-machine"),
+    viewers: [projectViewer("conversation:a2", "coffee-machine").viewer],
+  };
+  const b = standaloneConversation("conversation:b", "B_SECRET", "other-project");
+  const free = standaloneConversation("conversation:free", "FREE");
+  const engineering = conversation("coffee-machine", "conversation:engineering");
+  const expected = [
+    projectViewer(a1.id, "coffee-machine"),
+    projectViewer(a2.id, "coffee-machine"),
+  ];
+  const hostSnapshot: ChatSnapshotDto = {
+    ...snapshot(a1, a2, b, free, engineering),
+    retention: { days: 30, maxConversations: 50, maxVersions: 20 },
+    projectViewers: [
+      ...expected,
+      projectViewer(b.id, "other-project"),
+      projectViewer(b.id, "coffee-machine"),
+      projectViewer(free.id, "coffee-machine"),
+      projectViewer(engineering.id, "coffee-machine"),
+      projectViewer("conversation:missing", "coffee-machine"),
+      projectViewer(a1.id, "other-project"),
+    ],
+  };
+  const binding = testBindings({
+    snapshot: () => Promise.resolve(hostSnapshot),
+    command: () => Promise.reject(new Error("not used")),
+  }, () => Promise.resolve("coffee-machine"));
+
+  const focused = await binding.read();
+  assertEquals(focused.conversations.map((entry) => entry.id), [
+    a1.id,
+    a2.id,
+    free.id,
+    engineering.id,
+  ]);
+  assertEquals(focused.projectViewers, expected);
+  assertEquals(focused.retention, hostSnapshot.retention);
+  assertEquals(JSON.stringify(focused).includes("B_SECRET"), false);
+
+  const selected = await binding.read(a1.id);
+  assertEquals(selected.conversations.map((entry) => entry.id), [
+    a1.id,
+    a2.id,
+    free.id,
+    engineering.id,
+  ]);
+  assertEquals(
+    selected.conversations.find((entry) => entry.id === a1.id)?.messages.map((entry) =>
+      entry.text
+    ),
+    ["A1"],
+  );
+  for (const conversationId of [a2.id, free.id, engineering.id]) {
+    const unselected = selected.conversations.find((entry) =>
+      entry.id === conversationId
+    );
+    assertEquals(unselected?.messages, []);
+    assertEquals(unselected?.viewers, []);
+  }
+  assertEquals(selected.projectViewers, expected);
+  assertEquals(selected.retention, hostSnapshot.retention);
+  assertEquals(selected.selectedConversationId, a1.id);
+});
+
+Deno.test("associated foreign chats are hidden while unattached standalone chats remain visible", async () => {
+  const foreign = standaloneConversation(
+    "conversation:b",
+    "FOREIGN_SECRET",
+    "other-project",
+  );
+  const free = standaloneConversation("conversation:free", "FREE");
+  const requests: Array<string | undefined> = [];
+  const binding = testBindings({
+    snapshot(input) {
+      requests.push(input.conversationId);
+      return Promise.resolve(snapshot(foreign, free));
+    },
+    command: () => Promise.reject(new Error("not used")),
+  }, () => Promise.resolve("coffee-machine"));
+  await binding.read();
+  const hidden = await binding.read(foreign.id);
+  assertEquals(hidden.conversations, []);
+  assertEquals(hidden.selectedConversationId, undefined);
+  assertEquals(JSON.stringify(hidden).includes("FOREIGN_SECRET"), false);
+  assertEquals(requests, [undefined]);
+  const visible = await binding.read(free.id);
+  assertEquals(visible.conversations.map((entry) => entry.id), [free.id]);
+  assertEquals(requests, [undefined, free.id]);
+});
+
+Deno.test("absent focus releases no project viewers or associated transcripts", async () => {
+  const member = standaloneConversation(
+    "conversation:a",
+    "PROJECT_SECRET",
+    "coffee-machine",
+  );
+  const free = standaloneConversation("conversation:free", "FREE");
+  const binding = testBindings({
+    snapshot: () =>
+      Promise.resolve({
+        ...snapshot(member, free),
+        projectViewers: [projectViewer(member.id, "coffee-machine")],
+      }),
+    command: () => Promise.reject(new Error("not used")),
+  }, () => Promise.resolve(undefined));
+  const result = await binding.read();
+  assertEquals(result.projectViewers, []);
+  assertEquals(result.conversations.map((entry) => entry.id), [free.id]);
+  assertEquals(result.selectedConversationId, undefined);
+  assertEquals(JSON.stringify(result).includes("PROJECT_SECRET"), false);
+});
+
+Deno.test("focus change while the host snapshot is pending releases neither transcripts nor aggregate", async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let focus = "coffee-machine";
+  let snapshots = 0;
+  const member = standaloneConversation("conversation:a", "STALE_SECRET", focus);
+  const binding = testBindings({
+    async snapshot() {
+      snapshots += 1;
+      entered.resolve();
+      await release.promise;
+      return {
+        ...snapshot(member),
+        projectViewers: [projectViewer(member.id, "coffee-machine")],
+      };
+    },
+    command: () => Promise.reject(new Error("not used")),
+  }, () => Promise.resolve(focus));
+  const pending = binding.read();
+  await entered.promise;
+  focus = "other-project";
+  release.resolve();
+  const result = await pending;
+  assertEquals(result.conversations, []);
+  assertEquals(result.projectViewers ?? [], []);
+  assertEquals(JSON.stringify(result).includes("STALE_SECRET"), false);
+  assertEquals(snapshots, 1);
+});
+
+Deno.test("workspace chat creation requires exact available focus before any host command", async () => {
+  let focus: string | undefined = "other-project";
+  const commands: ChatCommandRequest[] = [];
+  let snapshots = 0;
+  const binding = testBindings({
+    snapshot() {
+      snapshots += 1;
+      return Promise.resolve(snapshot());
+    },
+    command(input) {
+      commands.push(input);
+      return Promise.resolve({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        requestId: input.requestId,
+        ok: true,
+      });
+    },
+  }, () => Promise.resolve(focus));
+  const request: ChatCommandRequest = {
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "create-workspace",
+    command: "conversation.create",
+    workspaceProjectId: "coffee-machine",
+    title: "ERPNext",
+  };
+  assertEquals((await binding.command(request)).ok, false);
+  focus = undefined;
+  assertEquals((await binding.command(request)).ok, false);
+  assertEquals(commands, []);
+  focus = "coffee-machine";
+  assertEquals((await binding.command(request)).ok, true);
+  assertEquals(commands, [request]);
+  assertEquals(snapshots, 0);
+});
+
+Deno.test("workspace attachment requires exact available focus and an eligible standalone owner", async () => {
+  const free = standaloneConversation("conversation:free");
+  const same = standaloneConversation("conversation:same", undefined, "coffee-machine");
+  const foreign = standaloneConversation(
+    "conversation:foreign",
+    undefined,
+    "other-project",
+  );
+  const engineering = conversation("coffee-machine", "conversation:engineering");
+  let focus: string | undefined;
+  const commands: ChatCommandRequest[] = [];
+  const binding = testBindings({
+    snapshot: () => Promise.resolve(snapshot(free, same, foreign, engineering)),
+    command(input) {
+      commands.push(input);
+      return Promise.resolve({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        requestId: input.requestId,
+        ok: true,
+      });
+    },
+  }, () => Promise.resolve(focus));
+  const request = {
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-workspace",
+    command: "conversation.attach-project",
+    conversationId: free.id,
+    workspaceProjectId: "coffee-machine",
+  } as const;
+  assertEquals((await binding.command(request)).ok, false);
+  focus = "other-project";
+  assertEquals((await binding.command(request)).ok, false);
+  focus = "coffee-machine";
+  for (const conversationId of [foreign.id, engineering.id, "conversation:missing"]) {
+    assertEquals((await binding.command({ ...request, conversationId })).ok, false);
+  }
+  assertEquals(commands, []);
+  assertEquals((await binding.command(request)).ok, true);
+  const alreadyAssociated = { ...request, conversationId: same.id };
+  assertEquals((await binding.command(alreadyAssociated)).ok, true);
+  assertEquals(commands, [request, alreadyAssociated]);
+});
+
+Deno.test("project viewer commands retain the original owner and stable capture identity", async () => {
+  const selected = standaloneConversation(
+    "conversation:selected",
+    undefined,
+    "coffee-machine",
+  );
+  const owner = standaloneConversation(
+    "conversation:owner",
+    undefined,
+    "coffee-machine",
+  );
+  const foreign = standaloneConversation(
+    "conversation:foreign",
+    undefined,
+    "other-project",
+  );
+  const commands: ChatCommandRequest[] = [];
+  const binding = testBindings({
+    snapshot: () => Promise.resolve(snapshot(selected, owner, foreign)),
+    command(input) {
+      commands.push(input);
+      return Promise.resolve({
+        protocol: DESKTOP_CHAT_PROTOCOL,
+        requestId: input.requestId,
+        ok: true,
+      });
+    },
+  }, () => Promise.resolve("coffee-machine"));
+  const base = { protocol: DESKTOP_CHAT_PROTOCOL, conversationId: owner.id } as const;
+  const requests: Array<
+    Extract<ChatCommandRequest, {
+      command:
+        | "viewer.open"
+        | "viewer.tool-call"
+        | "viewer.resource-read"
+        | "viewer.archive-read";
+    }>
+  > = [
+    {
+      ...base,
+      requestId: "open-capture",
+      command: "viewer.open",
+      toolCallId: "capture:stable",
+    },
+    {
+      ...base,
+      requestId: "call-capture",
+      command: "viewer.tool-call",
+      toolCallId: "capture:stable",
+      name: "erpnext_doc_get",
+      arguments: { doctype: "Company", name: "Casys Industries" },
+    },
+    {
+      ...base,
+      requestId: "read-capture",
+      command: "viewer.resource-read",
+      toolCallId: "capture:stable",
+      uri: "ui://mcp-erpnext/doc-viewer",
+    },
+    {
+      ...base,
+      requestId: "archive-capture",
+      command: "viewer.archive-read",
+      viewerId: "capture:stable",
+    },
+  ];
+  for (const request of requests) {
+    assertEquals(
+      (await binding.command({ ...request, conversationId: foreign.id })).ok,
+      false,
+    );
+  }
+  assertEquals(commands, []);
+  for (const request of requests) {
+    assertEquals((await binding.command(request)).ok, true);
+  }
+  assertEquals(commands, requests);
+  assertEquals(
+    commands.every((request) =>
+      "conversationId" in request && request.conversationId === owner.id
+    ),
+    true,
+  );
+});
+
+Deno.test("focus change during workspace command authorization sends zero host commands", async () => {
+  for (
+    const command of [
+      "conversation.create",
+      "conversation.attach-project",
+      "viewer.open",
+    ] as const
+  ) {
+    const entered = deferred<void>();
+    const release = deferred<string>();
+    let reads = 0;
+    let commands = 0;
+    const owner = standaloneConversation(
+      "conversation:owner",
+      undefined,
+      "coffee-machine",
+    );
+    const binding = testBindings({
+      snapshot: () => Promise.resolve(snapshot(owner)),
+      command(input) {
+        commands += 1;
+        return Promise.resolve({
+          protocol: DESKTOP_CHAT_PROTOCOL,
+          requestId: input.requestId,
+          ok: true,
+        });
+      },
+    }, () => {
+      reads += 1;
+      if (reads === 1) return Promise.resolve("coffee-machine");
+      entered.resolve();
+      return release.promise;
+    });
+    const base = {
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: `race:${command}`,
+    } as const;
+    const request: ChatCommandRequest = command === "conversation.create"
+      ? { ...base, command, workspaceProjectId: "coffee-machine" }
+      : command === "conversation.attach-project"
+      ? {
+        ...base,
+        command,
+        conversationId: owner.id,
+        workspaceProjectId: "coffee-machine",
+      }
+      : { ...base, command, conversationId: owner.id, toolCallId: "capture:stable" };
+    const pending = binding.command(request);
+    await Promise.race([
+      entered.promise,
+      pending.then(() => {
+        throw new Error("command completed before verifying the focus again");
+      }),
+    ]);
+    assertEquals(commands, 0);
+    release.resolve("other-project");
+    assertEquals((await pending).ok, false);
+    assertEquals(commands, 0);
+    assertEquals(reads, 2);
+  }
+});
+
+function testBindings(
+  host: DesktopChatBindingHost,
+  currentProjectId: () => Promise<string | undefined>,
+): {
+  read(conversationId?: string): Promise<ChatSnapshotDto>;
+  command(input: ChatCommandRequest): Promise<ChatCommandResponse>;
+} {
+  const handlers = new Map<string, (input: unknown) => unknown>();
+  registerDesktopChatBindings(
+    { bind: (name, handler) => handlers.set(name, handler) },
+    host,
+    undefined,
+    { currentProjectId },
+  );
+  return {
+    async read(conversationId) {
+      return parseChatSnapshotDto(
+        await handlers.get(CHAT_SNAPSHOT_BINDING)?.({
+          protocol: DESKTOP_CHAT_PROTOCOL,
+          ...(conversationId === undefined ? {} : { conversationId }),
+        }),
+      );
+    },
+    async command(input) {
+      return parseChatCommandResponse(
+        await handlers.get(CHAT_COMMAND_BINDING)?.(input),
+      );
+    },
+  };
+}
+
+function projectViewer(
+  owningConversationId: string,
+  workspaceProjectId: string,
+): ChatProjectViewerDto {
+  const viewer: ChatToolViewerDto = {
+    viewerId: `capture:${owningConversationId}`,
+    toolCallId: "native-call:reused",
+    messageId: `message:${owningConversationId}`,
+    tool: "erpnext_company_list",
+    appUri: "ui://mcp-erpnext/doclist-viewer",
+  };
+  return { workspaceProjectId, owningConversationId, viewer };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
 function snapshot(...conversations: readonly ChatConversationDto[]) {
   return Object.freeze({
     protocol: DESKTOP_CHAT_PROTOCOL,
@@ -695,10 +1127,12 @@ function conversation(
 function standaloneConversation(
   id = "conversation:solo",
   message?: string,
+  workspaceProjectId?: string,
 ): ChatConversationDto {
   return Object.freeze({
     id,
     kind: "standalone" as const,
+    ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
     title: "Standalone chat",
     status: "idle",
     createdAt: "2026-08-23T00:00:00.000Z",

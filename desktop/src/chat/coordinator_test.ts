@@ -2863,6 +2863,381 @@ Deno.test("claude-style capture ignores foreign and unparsable shapes", async ()
   await coordinator.stop();
 });
 
+Deno.test("project whiteboard membership keeps standalone runtime and MCP ownership", async () => {
+  const store = new MemoryChatConversationStore();
+  const pool = standalonePool({ probeTools: ["t_one"], store });
+  const coordinator = await pool.coordinator();
+  const created = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "create-member",
+    command: "conversation.create",
+    workspaceProjectId: "project-a",
+  });
+  assert(created.ok && created.conversationId !== undefined);
+  const conversationId = created.conversationId;
+  const before = (await store.load()).find((entry) => entry.id === conversationId);
+  assertEquals(before?.kind, "standalone");
+  assertEquals(before?.projectId, undefined);
+  assertEquals(before?.workspaceProjectId, "project-a");
+  assertEquals(before?.sessionKey.includes("/standalone/"), true);
+  await enableTestMcp(coordinator, conversationId);
+  const attached = (await store.load()).find((entry) => entry.id === conversationId);
+  const ensured = pool.mcp.ensureInputs.length;
+  const repeated = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-same-project",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-a",
+  });
+  assert(repeated.ok);
+  assertEquals(
+    (await store.load()).find((entry) => entry.id === conversationId)?.sessionKey,
+    attached?.sessionKey,
+  );
+  assertEquals(pool.mcp.ensureInputs.length, ensured);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].mcp?.id,
+    "build123d",
+  );
+  await captureViewerResult(pool, coordinator, conversationId, [{
+    toolCallId: "member-call",
+    tool: "t_one",
+  }]);
+  await coordinator.stop();
+
+  const restored = await standalonePool({ probeTools: ["t_one"], store }).coordinator();
+  const snapshot = restored.snapshot(conversationId);
+  assertEquals(snapshot.conversations[0].kind, "standalone");
+  assertEquals(snapshot.conversations[0].workspaceProjectId, "project-a");
+  assertEquals(snapshot.conversations[0].mcp?.id, "build123d");
+  assertEquals(snapshot.projectViewers?.[0]?.owningConversationId, conversationId);
+  assertEquals(
+    snapshot.projectViewers?.[0]?.viewer.viewerId,
+    snapshot.conversations[0].viewers[0]?.viewerId,
+  );
+  parseChatSnapshotDto(snapshot);
+  await restored.stop();
+});
+
+Deno.test("project whiteboard aggregates unselected chats without transferring viewer ownership", async () => {
+  const backend = new FakeViewerBackend();
+  const pool = standalonePool({ probeTools: ["t_one"], viewerBackend: backend });
+  const ensureSession = pool.mcp.runtime.ensureSession;
+  pool.mcp.runtime.ensureSession = async (input) => ({
+    ...await ensureSession(input),
+    backendSessionId: `backend:${input.sessionKey}`,
+    agentSessionId: `agent:${input.sessionKey}`,
+  });
+  const coordinator = await pool.coordinator();
+  const members: string[] = [];
+  for (const workspaceProjectId of ["project-a", "project-a", "project-b", undefined]) {
+    const result = await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: `create-member-${members.length}`,
+      command: "conversation.create",
+      ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
+    });
+    assert(result.ok && result.conversationId !== undefined);
+    members.push(result.conversationId);
+    await enableTestMcp(coordinator, result.conversationId);
+    await captureViewerResult(pool, coordinator, result.conversationId, [{
+      toolCallId: "shared-native-call",
+      tool: "t_one",
+    }]);
+  }
+  const snapshot = coordinator.snapshot(members[0]);
+  const selected = snapshot.conversations.find((entry) => entry.id === members[0]);
+  const unselected = snapshot.conversations.find((entry) => entry.id === members[1]);
+  assertEquals(selected?.viewers.length, 1);
+  assertEquals(unselected?.viewers, []);
+  assertEquals(unselected?.messages, []);
+  assertEquals(
+    snapshot.projectViewers?.map((entry) => entry.owningConversationId).sort(),
+    members.slice(0, 3).sort(),
+  );
+  assertEquals(
+    snapshot.projectViewers?.filter((entry) => entry.workspaceProjectId === "project-a")
+      .length,
+    2,
+  );
+  const first = snapshot.projectViewers?.find((entry) =>
+    entry.owningConversationId === members[0]
+  );
+  assert(first !== undefined);
+  assertEquals(first.viewer.archive, undefined);
+  assertEquals(
+    new Set(snapshot.projectViewers?.map((entry) => entry.viewer.viewerId)).size,
+    3,
+  );
+  assertEquals(
+    snapshot.projectViewers?.every((entry) =>
+      entry.viewer.toolCallId === "shared-native-call"
+    ),
+    true,
+  );
+  for (
+    const command of [
+      "viewer.open",
+      "viewer.tool-call",
+      "viewer.resource-read",
+    ] as const
+  ) {
+    const crossed = await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: `cross-owner-${command}`,
+      command,
+      conversationId: members[1],
+      toolCallId: first.viewer.viewerId,
+      ...(command === "viewer.tool-call" ? { name: "t_one", arguments: {} } : {}),
+      ...(command === "viewer.resource-read"
+        ? { uri: "casys://build123d/artifacts/test.step" }
+        : {}),
+    } as ChatCommandRequest);
+    assertEquals(crossed.ok, false);
+  }
+  assertEquals(backend.appCalls, []);
+  assertEquals(backend.toolCalls, []);
+  assertEquals(backend.resourceCalls, []);
+  const opened = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "open-owning-chat",
+    command: "viewer.open",
+    conversationId: first.owningConversationId,
+    toolCallId: first.viewer.viewerId,
+  });
+  assert(opened.ok);
+  assertEquals(opened.viewer?.viewerId, first.viewer.viewerId);
+  parseChatSnapshotDto(snapshot);
+  await coordinator.stop();
+});
+
+Deno.test("attaching an existing chat is explicit and preserves its session", async () => {
+  const store = new MemoryChatConversationStore();
+  const pool = standalonePool({ probeTools: ["t_one"], store });
+  const coordinator = await pool.coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  await enableTestMcp(coordinator, conversationId);
+  await captureViewerResult(pool, coordinator, conversationId, [{
+    toolCallId: "before-membership",
+    tool: "t_one",
+  }]);
+  assertEquals(coordinator.snapshot().projectViewers, []);
+  const before = (await store.load()).find((entry) => entry.id === conversationId);
+  const attached = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-existing-chat",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-a",
+  });
+  assert(attached.ok);
+  const after = (await store.load()).find((entry) => entry.id === conversationId);
+  assertEquals(after?.sessionKey, before?.sessionKey);
+  assertEquals(after?.kind, before?.kind);
+  assertEquals(after?.mcpId, before?.mcpId);
+  assertEquals(after?.toolResults, before?.toolResults);
+  assertEquals(after?.knownMessageIdsByKey, before?.knownMessageIdsByKey);
+  assertEquals(
+    coordinator.snapshot().projectViewers?.[0]?.owningConversationId,
+    conversationId,
+  );
+  const moved = await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "refuse-moving-chat",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-b",
+  });
+  assertEquals(moved.ok, false);
+  assertEquals(
+    coordinator.snapshot().projectViewers?.[0]?.workspaceProjectId,
+    "project-a",
+  );
+  const engineering = await createConversation(coordinator, "project-a");
+  assertEquals(
+    (await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: "refuse-engineering-membership",
+      command: "conversation.attach-project",
+      conversationId: engineering,
+      workspaceProjectId: "project-a",
+    })).ok,
+    false,
+  );
+  const closed = await createStandaloneConversation(coordinator);
+  await coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "close-member",
+    command: "conversation.close",
+    conversationId: closed,
+  });
+  assertEquals(
+    (await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: "refuse-closed-membership",
+      command: "conversation.attach-project",
+      conversationId: closed,
+      workspaceProjectId: "project-a",
+    })).ok,
+    false,
+  );
+  await coordinator.stop();
+});
+
+Deno.test("failed project membership leaves no live assignment and permits another project", async () => {
+  class OnceFailingStore extends MemoryChatConversationStore {
+    failNext = false;
+
+    override save(entries: readonly StoredConversation[]): Promise<void> {
+      if (this.failNext) {
+        this.failNext = false;
+        return Promise.reject(new Error("disk full"));
+      }
+      return super.save(entries);
+    }
+  }
+  const store = new OnceFailingStore();
+  const coordinator = await standalonePool({ store }).coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  const request = {
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-after-store-failure",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-a",
+  } as const;
+  store.failNext = true;
+  assertEquals((await coordinator.command(request)).ok, false);
+  assertEquals(
+    (await store.load()).find((entry) => entry.id === conversationId)
+      ?.workspaceProjectId,
+    undefined,
+  );
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].workspaceProjectId,
+    undefined,
+  );
+  assert(
+    (await coordinator.command({
+      ...request,
+      requestId: "attach-another-project",
+      workspaceProjectId: "project-b",
+    })).ok,
+  );
+  assertEquals(
+    (await store.load()).find((entry) => entry.id === conversationId)
+      ?.workspaceProjectId,
+    "project-b",
+  );
+  await coordinator.stop();
+  const reopened = await standalonePool({ store }).coordinator();
+  assertEquals(
+    reopened.snapshot(conversationId).conversations[0].workspaceProjectId,
+    "project-b",
+  );
+  await reopened.stop();
+});
+
+Deno.test("overlapping project attachments commit only the successful membership", async () => {
+  const failingSaveStarted = Promise.withResolvers<void>();
+  const releaseFailingSave = Promise.withResolvers<void>();
+  class DelayedFailureStore extends MemoryChatConversationStore {
+    failNext = false;
+
+    override async save(entries: readonly StoredConversation[]): Promise<void> {
+      if (this.failNext) {
+        this.failNext = false;
+        failingSaveStarted.resolve();
+        await releaseFailingSave.promise;
+        throw new Error("disk full");
+      }
+      await super.save(entries);
+    }
+  }
+  const store = new DelayedFailureStore();
+  const coordinator = await standalonePool({ store }).coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  store.failNext = true;
+  const first = coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "overlap-attach-a",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-a",
+  });
+  await failingSaveStarted.promise;
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].workspaceProjectId,
+    undefined,
+  );
+  const second = coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "overlap-attach-b",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-b",
+  });
+  releaseFailingSave.resolve();
+  assertEquals((await first).ok, false);
+  assertEquals((await second).ok, true);
+  assertEquals(
+    coordinator.snapshot(conversationId).conversations[0].workspaceProjectId,
+    "project-b",
+  );
+  assertEquals(
+    (await store.load()).find((entry) => entry.id === conversationId)
+      ?.workspaceProjectId,
+    "project-b",
+  );
+  await coordinator.stop();
+});
+
+Deno.test("a concurrent canvas save cannot overwrite a committed project attachment", async () => {
+  const attachmentSaveStarted = Promise.withResolvers<void>();
+  const releaseAttachmentSave = Promise.withResolvers<void>();
+  class PausedSaveStore extends MemoryChatConversationStore {
+    pauseNext = false;
+
+    override async save(entries: readonly StoredConversation[]): Promise<void> {
+      if (this.pauseNext) {
+        this.pauseNext = false;
+        attachmentSaveStarted.resolve();
+        await releaseAttachmentSave.promise;
+      }
+      await super.save(entries);
+    }
+  }
+  const store = new PausedSaveStore();
+  const coordinator = await standalonePool({ store }).coordinator();
+  const conversationId = await createStandaloneConversation(coordinator);
+  store.pauseNext = true;
+  const attachment = coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "attach-before-canvas-save",
+    command: "conversation.attach-project",
+    conversationId,
+    workspaceProjectId: "project-a",
+  });
+  await attachmentSaveStarted.promise;
+  const canvas = coordinator.command({
+    protocol: DESKTOP_CHAT_PROTOCOL,
+    requestId: "canvas-during-attachment",
+    command: "canvas.set-layout",
+    conversationId,
+    layout: { version: 1, nodes: [], groups: [] },
+  });
+  releaseAttachmentSave.resolve();
+  assertEquals((await attachment).ok, true);
+  assertEquals((await canvas).ok, true);
+  assertEquals(
+    (await store.load()).find((entry) => entry.id === conversationId)
+      ?.workspaceProjectId,
+    "project-a",
+  );
+  await coordinator.stop();
+});
+
 Deno.test("canvas layout round-trips and reconciles against retained results", async () => {
   const pool = standalonePool({ probeTools: ["t_one"] });
   const coordinator = await pool.coordinator();
@@ -3298,10 +3673,11 @@ async function captureViewerResult(
     result?: Record<string, unknown>;
   }>,
 ): Promise<void> {
+  const turnIndex = pool.mcp.turns.length;
   await coordinator.command(send("r1", conversationId, "Model a box"));
-  await until(() => pool.mcp.turns.length === 1);
+  await until(() => pool.mcp.turns.length === turnIndex + 1);
   for (const call of calls) {
-    pool.mcp.turns[0].events.push({
+    pool.mcp.turns[turnIndex].events.push({
       type: "tool_call",
       text: call.tool,
       toolCallId: call.toolCallId,
@@ -3309,9 +3685,11 @@ async function captureViewerResult(
       rawOutput: { result: call.result ?? viewerToolResult(11) },
     });
   }
-  pool.mcp.turns[0].finish({ status: "completed" });
+  pool.mcp.turns[turnIndex].finish({ status: "completed" });
   await until(() =>
-    coordinator.snapshot(conversationId).conversations[0].status === "idle"
+    coordinator.snapshot(conversationId).conversations.find((entry) =>
+      entry.id === conversationId
+    )?.status === "idle"
   );
 }
 
@@ -4479,6 +4857,15 @@ Deno.test("the 21st capture retires v1 with a transcript notice", async () => {
   });
   const coordinator = await pool.coordinator();
   const conversationId = await createStandaloneConversation(coordinator);
+  assert(
+    (await coordinator.command({
+      protocol: DESKTOP_CHAT_PROTOCOL,
+      requestId: "attach-retention-case",
+      command: "conversation.attach-project",
+      conversationId,
+      workspaceProjectId: "project-a",
+    })).ok,
+  );
   await enableTestMcp(coordinator, conversationId);
   backend.readResource = (server: string, uri: string) => {
     backend.resourceCalls.push({ server, uri });
@@ -4508,6 +4895,10 @@ Deno.test("the 21st capture retires v1 with a transcript notice", async () => {
   const snapshot = coordinator.snapshot(conversationId);
   const viewers = snapshot.conversations[0].viewers;
   assertEquals(viewers.length, 20);
+  assertEquals(
+    snapshot.projectViewers?.map((entry) => entry.viewer.viewerId),
+    viewers.map((entry) => entry.viewerId),
+  );
   assertEquals(viewers[0]?.archive?.revision, 2);
   assertEquals(viewers[19]?.archive?.revision, 21);
   assertEquals(

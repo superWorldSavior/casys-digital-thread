@@ -77,6 +77,7 @@ export const PACKAGED_VIEWER_APP_OBJECT_DIRECTORY =
 export function createPackagedWorkbenchBff(
   accessToken: string,
   controlPlaneRoot: string,
+  options: { readonly uiAssetDirectory?: string } = {},
 ): (request: Request) => Promise<Response> {
   const activeProjectDirectory = rooted(
     controlPlaneRoot,
@@ -219,7 +220,7 @@ export function createPackagedWorkbenchBff(
       PACKAGED_VIEWER_APP_OBJECT_DIRECTORY,
     ),
   });
-  const uiDirectory = fileUrlPath(
+  const uiDirectory = options.uiAssetDirectory ?? fileUrlPath(
     new URL("../../../src/ui/dist/thread", import.meta.url),
   );
   const native = createNativeWorkbenchHandler({
@@ -256,6 +257,7 @@ export function createPackagedWorkbenchBff(
     focus,
     workspaceId: WORKBENCH_WORKSPACE_ID,
     native,
+    allowUnfocusedDocument: true,
     projectCatalog: () =>
       readPersistedProjectCatalog(projectStore, activeProjectDirectory),
     projectDiscovery: () =>

@@ -39,6 +39,8 @@ export interface ChatCanvasProps {
   readonly conversation: ChatConversationDto;
   readonly retention: ChatRetentionDto | undefined;
   readonly dispatch: ChatViewerDispatch | undefined;
+  readonly focusedViewerId?: string;
+  readonly onFocusViewer?: (viewerId: string | undefined) => void;
   readonly saveQueue: ChatCanvasSaveQueue;
   readonly command: (
     request: DesktopChatBindingCommandRequest,
@@ -66,6 +68,8 @@ export function ChatCanvas({
   conversation,
   retention,
   dispatch,
+  focusedViewerId,
+  onFocusViewer,
   saveQueue,
   command,
   onClose,
@@ -78,9 +82,23 @@ export function ChatCanvas({
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [groupTitle, setGroupTitle] = useState("");
   const [noteText, setNoteText] = useState("");
+  const [localFocusedViewerId, setLocalFocusedViewerId] = useState<
+    string | undefined
+  >(undefined);
+  const board = useRef<HTMLDivElement>(null);
+  const loadedConversation = useRef<string | undefined>(undefined);
+  const positionedFocus = useRef<string | undefined>(undefined);
+  const selectedViewerId = onFocusViewer === undefined
+    ? focusedViewerId ?? localFocusedViewerId
+    : focusedViewerId;
+  const focusViewer = useCallback((viewerId: string | undefined) => {
+    setLocalFocusedViewerId(viewerId);
+    onFocusViewer?.(viewerId);
+  }, [onFocusViewer]);
   useEffect(() => saveQueue.subscribe(setSaveError), [saveQueue]);
   useEffect(() => {
     let cancelled = false;
+    loadedConversation.current = undefined;
     setLayout(undefined);
     setError(undefined);
     void command({
@@ -91,6 +109,7 @@ export function ChatCanvas({
     }).then((response) => {
       if (cancelled) return;
       if (response?.ok && response.layout !== undefined) {
+        loadedConversation.current = conversationId;
         setLayout(saveQueue.layout ?? response.layout);
       } else {
         setError(response?.error ?? "Canvas layout is unavailable.");
@@ -132,6 +151,45 @@ export function ChatCanvas({
       layout === undefined ? undefined : resolveCanvasNodes(layout, viewers),
     [layout, viewers],
   );
+  const retainedFocus = viewers.find((viewer) =>
+    viewer.viewerId === selectedViewerId
+  )?.viewerId;
+  const activeNodeId = resolved?.placed.find(({ viewer }) =>
+    viewer?.viewerId === retainedFocus && retainedFocus !== undefined
+  )?.node.id;
+
+  useEffect(() => {
+    if (retainedFocus === undefined) {
+      positionedFocus.current = undefined;
+      return;
+    }
+    if (
+      layout === undefined || loadedConversation.current !== conversationId
+    ) return;
+    const focusKey = JSON.stringify([conversationId, retainedFocus]);
+    if (positionedFocus.current === focusKey) return;
+    const node = layout.nodes.find((entry) =>
+      entry.kind === "viewer" && entry.viewerId === retainedFocus
+    );
+    if (node === undefined) {
+      update(placeViewerNode(layout, {
+        id: `node:${crypto.randomUUID()}`,
+        viewerId: retainedFocus,
+      }));
+      return;
+    }
+    if (groupFilter !== "all") {
+      setGroupFilter("all");
+      return;
+    }
+    if (board.current === null) return;
+    board.current.scrollTo({
+      left: Math.max(0, node.x - 24),
+      top: Math.max(0, node.y - 24),
+      behavior: "smooth",
+    });
+    positionedFocus.current = focusKey;
+  }, [conversationId, groupFilter, layout, retainedFocus, update]);
 
   if (error !== undefined) {
     return (
@@ -255,11 +313,13 @@ export function ChatCanvas({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() =>
+              onClick={() => {
                 update(placeViewerNode(layout, {
                   id: `node:${crypto.randomUUID()}`,
                   viewerId: viewer.viewerId,
-                }))}
+                }));
+                focusViewer(viewer.viewerId);
+              }}
             >
               Place {viewer.tool}
             </Button>
@@ -271,7 +331,7 @@ export function ChatCanvas({
           Empty canvas. Run a tool to place its viewer, or add a note.
         </p>
       )}
-      <div className="desktop-chat-canvas-board">
+      <div className="desktop-chat-canvas-board" ref={board}>
         {visible.map(({ node, viewer }) => (
           <CanvasNode
             key={node.id}
@@ -280,13 +340,18 @@ export function ChatCanvas({
             viewer={viewer}
             groups={resolved.groups}
             dispatch={dispatch}
+            active={node.id === activeNodeId}
+            onActivate={() => focusViewer(viewer?.viewerId)}
             onMove={(x, y) => update(applyNodeMove(layout, node.id, x, y))}
             onGroup={(groupId) =>
               update(applyNodeGroup(layout, node.id, groupId))}
             onTitle={(title) => update(applyNodeTitle(layout, node.id, title))}
             onText={(text) => update(applyNoteText(layout, node.id, text))}
             onDone={(done) => update(applyNoteDone(layout, node.id, done))}
-            onRemove={() => update(removeCanvasNode(layout, node.id))}
+            onRemove={() => {
+              if (node.id === activeNodeId) focusViewer(undefined);
+              update(removeCanvasNode(layout, node.id));
+            }}
           />
         ))}
       </div>
@@ -300,6 +365,8 @@ function CanvasNode({
   viewer,
   groups,
   dispatch,
+  active,
+  onActivate,
   onMove,
   onGroup,
   onTitle,
@@ -312,6 +379,8 @@ function CanvasNode({
   readonly viewer: ChatToolViewerDto | undefined;
   readonly groups: readonly { readonly id: string; readonly title: string }[];
   readonly dispatch: ChatViewerDispatch | undefined;
+  readonly active: boolean;
+  readonly onActivate: () => void;
   readonly onMove: (x: number, y: number) => void;
   readonly onGroup: (groupId: string | undefined) => void;
   readonly onTitle: (title: string | undefined) => void;
@@ -466,14 +535,27 @@ function CanvasNode({
             </p>
           ))}
       {node.kind === "viewer" && viewer !== undefined &&
-        dispatch !== undefined && (
-        <ChatViewerPanel
-          conversationId={conversationId}
-          viewers={[viewer]}
-          messageId={viewer.messageId}
-          dispatch={dispatch}
-        />
-      )}
+        (active && dispatch !== undefined
+          ? (
+            <ChatViewerPanel
+              conversationId={conversationId}
+              viewers={[viewer]}
+              messageId={viewer.messageId}
+              dispatch={dispatch}
+              autoOpenViewerId={viewer.viewerId}
+            />
+          )
+          : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={dispatch === undefined}
+              onClick={onActivate}
+            >
+              Open {viewer.tool} result
+            </Button>
+          ))}
     </article>
   );
 }

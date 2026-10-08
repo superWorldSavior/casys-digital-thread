@@ -449,6 +449,83 @@ Deno.test("native Workbench health is independent of focus and project state", a
   assertEquals(focusReads, 1);
 });
 
+Deno.test("Desktop can opt into the native document and assets without inventing project focus", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${directory}/assets`);
+    await Deno.writeTextFile(
+      `${directory}/native-workbench.html`,
+      `<html><head><script type="module" src="./assets/native-workbench-test.js"></script></head><body><div id="native-preview"></div></body></html>`,
+    );
+    await Deno.writeTextFile(
+      `${directory}/assets/native-workbench-test.js`,
+      "export const ready = true;\n",
+    );
+    const focus = new MutableFocus(undefined);
+    const native = createNativeWorkbenchHandler({
+      store: new EmptyThreadStore(),
+      projectStore: new ProjectStore([]),
+      cockpitFocus: focus,
+      workspaceId: "primary",
+      htmlPath: `${directory}/native-workbench.html`,
+    });
+    const handler = createFocusedWorkspaceHandler({
+      focus,
+      workspaceId: "primary",
+      native,
+      allowUnfocusedDocument: true,
+    });
+
+    for (const path of ["/", "/native-workbench.html"]) {
+      const response = await handler(new Request(`http://localhost${path}`));
+      assertEquals(response.status, 200);
+      const html = await response.text();
+      assertStringIncludes(html, 'id="native-preview"');
+      assertStringIncludes(html, "./assets/native-workbench-test.js");
+      assertStringIncludes(html, MCP_APP_SCRIPT_NONCE_META_NAME);
+      assertEquals(html.includes("Cockpit awaiting project context"), false);
+      assertStringIncludes(
+        response.headers.get("Content-Security-Policy") ?? "",
+        "script-src 'self'",
+      );
+      assertEquals(
+        (await handler(new Request(`http://localhost${path}`, { method: "POST" })))
+          .status,
+        405,
+      );
+    }
+    const script = await handler(
+      new Request("http://localhost/assets/native-workbench-test.js"),
+    );
+    assertEquals(script.status, 200);
+    assertEquals(await script.text(), "export const ready = true;\n");
+
+    for (
+      const path of [
+        "/api/thread/workbench",
+        "/api/project/capabilities",
+        "/api/thread/viewer-sessions",
+      ]
+    ) {
+      const response = await handler(new Request(`http://localhost${path}`));
+      assertEquals(response.status, 409);
+      assertEquals((await response.json()).error, "cockpit_focus_not_selected");
+    }
+    assertEquals(focus.value, undefined);
+
+    const generic = createFocusedWorkspaceHandler({
+      focus,
+      workspaceId: "primary",
+      native,
+    });
+    const genericPage = await generic(new Request("http://localhost/"));
+    assertStringIncludes(await genericPage.text(), "Cockpit awaiting project context");
+    assertEquals(focus.value, undefined);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("native Workbench exposes the redacted capability projection by GET only", async () => {
   const project = projectFixture(
     "project-capabilities",
@@ -1871,7 +1948,7 @@ Deno.test("native Workbench serves hashed Vite JS and CSS without a command path
   }
 });
 
-Deno.test("native Workbench keeps its BFF read-only and frame-protected", async () => {
+Deno.test("native Workbench keeps its BFF read-only and blocks cross-origin framing", async () => {
   const project = projectFixture("project-one", "subject-one");
   const handler = createNativeWorkbenchHandler({
     store: new EmptyThreadStore(),
@@ -1906,7 +1983,7 @@ Deno.test("native Workbench keeps its BFF read-only and frame-protected", async 
   assertEquals(secondNonce === nonceMatch?.[1], false);
   assertStringIncludes(
     page.headers.get("Content-Security-Policy") ?? "",
-    "frame-ancestors 'none'",
+    "frame-ancestors 'self'",
   );
   assertStringIncludes(
     page.headers.get("Content-Security-Policy") ?? "",

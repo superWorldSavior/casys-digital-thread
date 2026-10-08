@@ -52,6 +52,13 @@ Deno.test("Lot 3 tasks compile both dedicated helpers and keep the host free of 
     generalTest.includes("--ignore=src/build/compiled-workbench-helper_e2e_test.ts"),
     true,
   );
+  // A second explicit root beside `src` disables the ignored-file filter.
+  assertEquals(
+    generalTest.includes(
+      "src && deno test e2e/native-memory-guard_test.ts && deno test --config=../deno.json",
+    ),
+    true,
+  );
   assertEquals(generalTest.includes("--allow-run"), false);
   assertEquals(
     sidecarTest.includes("--allow-net=127.0.0.1:3020,127.0.0.1:5176"),
@@ -70,6 +77,9 @@ Deno.test("Lot 3 tasks compile both dedicated helpers and keep the host free of 
   assertEquals(pack.includes("DENO_BIN=$(which deno)"), true);
   assertEquals(pack.includes('PATH="$PWD/dist/helpers:$PATH"'), true);
   assertEquals(pack.includes('"$DENO_BIN" desktop'), true);
+  // Deno 2.9.6 appends the macOS bundle suffix to this output basename.
+  assertEquals(pack.includes("--output=dist/CasysDigitalThread main.ts"), true);
+  assertEquals(pack.includes("--output=dist/CasysDigitalThread.app main.ts"), false);
   assertEquals(pack.includes("--deny-import"), true);
   assertEquals(pack.includes("allow-run=deno"), false);
   assertEquals(pack.includes("deno compile"), false);

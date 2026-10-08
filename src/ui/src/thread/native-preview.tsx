@@ -4,7 +4,7 @@ import type { JSX } from "react";
 import { HttpCockpitFleetClient, HttpThreadWorkbenchClient } from "./client.ts";
 import { HttpThreadViewerSessionsClient } from "./viewer-sessions-client.ts";
 import { ThreadWorkbench } from "./workbench.tsx";
-import { DesktopChat } from "./desktop-chat.tsx";
+import { DesktopChat, desktopChatRuntimeAvailable } from "./desktop-chat.tsx";
 import "../styles.css";
 
 const root = document.querySelector<HTMLElement>("#native-preview");
@@ -33,7 +33,7 @@ const viewerSessionsClient = new HttpThreadViewerSessionsClient(
  */
 function NativeCockpit(): JSX.Element {
   const [projectId, setProjectId] = useState<string>();
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(desktopChatRuntimeAvailable);
   const focusProject = useCallback((next: string | undefined) => {
     setProjectId(next);
   }, []);

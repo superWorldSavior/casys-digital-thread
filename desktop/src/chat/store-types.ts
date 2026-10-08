@@ -50,6 +50,8 @@ export interface StoredConversation {
    */
   readonly kind?: "project" | "standalone";
   readonly projectId?: string;
+  /** Standalone chat's shared whiteboard membership, never engineering authority. */
+  readonly workspaceProjectId?: string;
   /**
    * Active agent profile. Absent on entries written before profiles
    * existed; readers treat a missing id as the legacy Codex profile.

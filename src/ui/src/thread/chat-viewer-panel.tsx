@@ -55,6 +55,7 @@ export interface ChatViewerPanelProps {
   readonly viewers: readonly ChatToolViewerDto[];
   readonly messageId: string;
   readonly dispatch: ChatViewerDispatch;
+  readonly autoOpenViewerId?: string;
 }
 
 type ViewerState =
@@ -81,6 +82,7 @@ export function ChatViewerPanel({
   viewers,
   messageId,
   dispatch,
+  autoOpenViewerId,
 }: ChatViewerPanelProps): JSX.Element | null {
   const entries = viewers.filter((viewer) => viewer.messageId === messageId);
   const [selected, setSelected] = useState<string | undefined>(undefined);
@@ -143,7 +145,17 @@ export function ChatViewerPanel({
     openToken.current += 1;
     setSelected(undefined);
     setState({ phase: "idle" });
+    return () => {
+      openToken.current += 1;
+    };
   }, [conversationId]);
+
+  const automaticViewerId = entries.find((entry) =>
+    entry.viewerId === autoOpenViewerId
+  )?.viewerId;
+  useEffect(() => {
+    if (automaticViewerId !== undefined) void open(automaticViewerId);
+  }, [automaticViewerId, open]);
 
   if (entries.length === 0) return null;
   return (

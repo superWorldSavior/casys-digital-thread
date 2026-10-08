@@ -15,6 +15,16 @@ const args = [
   "--config=../deno.json",
   "--no-prompt",
   `--output=${HELPER_STAGE_SOURCE}`,
+  // Server startup builds the closed CalculiX qualification catalogue from
+  // this code-owned fixture. Embed it so the helper never needs the checkout.
+  "--include=../examples/bracket/bracket.step",
+  // The read-only bootstrap catalogue validates these reviewed build recipes
+  // at startup even though this helper cannot build or launch worker images.
+  "--include=../images/build123d-microsandbox-worker/Dockerfile",
+  "--include=../images/build123d-module-assembler-worker/Dockerfile",
+  "--include=../images/calculix-microsandbox-worker/Dockerfile",
+  "--include=../images/modelica-microsandbox-worker/Dockerfile",
+  "--include=../images/ngspice-microsandbox-worker/Dockerfile",
   ...CONTROL_PLANE_COMPILE_PERMISSION_FLAGS,
   "src/sidecar/main.ts",
 ];

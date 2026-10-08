@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1.0.14";
+import { assertEquals, assertRejects } from "jsr:@std/assert@1.0.14";
 import type { StoredConversation } from "../chat/store.ts";
 import { NodeChatConversationStore } from "./node-store.ts";
 
@@ -244,6 +244,109 @@ function archivedEntry(id: string, now: string): StoredConversation {
     ],
   };
 }
+
+Deno.test("Node store restores project-associated MCP chats without changing runtime ownership", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
+  try {
+    const now = new Date("2026-09-30T12:00:00.000Z");
+    const entries: StoredConversation[] = [
+      {
+        ...archivedEntry("conversation:erp", now.toISOString()),
+        workspaceProjectId: "coffee-machine",
+        agentProfileId: "casys-muse",
+      },
+      {
+        ...archivedEntry("conversation:cad", now.toISOString()),
+        workspaceProjectId: "coffee-machine",
+        agentProfileId: "casys-codex",
+      },
+      {
+        ...archivedEntry("conversation:other", now.toISOString()),
+        workspaceProjectId: "other-project",
+      },
+    ];
+    await new NodeChatConversationStore(root, { now: () => now }).save(entries);
+    const restored = await new NodeChatConversationStore(root, { now: () => now })
+      .load();
+    assertEquals(restored.length, 3);
+    for (const original of entries) {
+      const entry = restored.find((item) => item.id === original.id);
+      assertEquals(entry?.workspaceProjectId, original.workspaceProjectId);
+      assertEquals(entry?.kind, "standalone");
+      assertEquals(entry?.projectId, undefined);
+      assertEquals(entry?.sessionKey, original.sessionKey);
+      assertEquals(entry?.agentProfileId, original.agentProfileId);
+      assertEquals(entry?.mcpId, original.mcpId);
+      assertEquals(entry?.mcpStatus, original.mcpStatus);
+      assertEquals(entry?.mcpTools, original.mcpTools);
+      assertEquals(entry?.toolResults, original.toolResults);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("Node store restores older chats without inventing a workspace association", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
+  try {
+    const now = new Date("2026-09-30T12:00:00.000Z");
+    const standalone = archivedEntry("conversation:solo-old", now.toISOString());
+    const engineering = conversation("conversation:project-old", now.toISOString(), 1);
+    await new NodeChatConversationStore(root, { now: () => now }).save([
+      standalone,
+      engineering,
+    ]);
+    const loaded = await new NodeChatConversationStore(root, { now: () => now }).load();
+    const solo = loaded.find((entry) => entry.id === standalone.id);
+    const project = loaded.find((entry) => entry.id === engineering.id);
+    assertEquals(solo?.kind, "standalone");
+    assertEquals(solo?.workspaceProjectId, undefined);
+    assertEquals(solo?.projectId, undefined);
+    assertEquals(project?.projectId, "coffee-machine");
+    assertEquals(project?.workspaceProjectId, undefined);
+    assertEquals(project?.sessionKey, engineering.sessionKey);
+    assertEquals(project?.messages, engineering.messages);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("Node store refuses workspace associations that contradict engineering ownership", async () => {
+  const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });
+  try {
+    const now = new Date("2026-09-30T12:00:00.000Z");
+    const store = new NodeChatConversationStore(root, { now: () => now });
+    await store.save([archivedEntry("conversation:tampered", now.toISOString())]);
+    const indexPath = `${root}/conversations.json`;
+    const index = JSON.parse(await Deno.readTextFile(indexPath));
+    for (
+      const overrides of [
+        {
+          kind: "project",
+          projectId: "coffee-machine",
+          workspaceProjectId: "coffee-machine",
+        },
+        {
+          kind: "standalone",
+          projectId: "coffee-machine",
+          workspaceProjectId: "coffee-machine",
+        },
+        { kind: "standalone", workspaceProjectId: "../coffee-machine" },
+      ]
+    ) {
+      await Deno.writeTextFile(
+        indexPath,
+        JSON.stringify({
+          ...index,
+          conversations: [{ ...index.conversations[0], ...overrides }],
+        }),
+      );
+      await assertRejects(() => store.load(), TypeError);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("Node store round-trips the session canvas layout", async () => {
   const root = await Deno.makeTempDir({ prefix: "casys-chat-node-store-" });

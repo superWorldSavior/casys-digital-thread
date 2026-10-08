@@ -2,6 +2,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { nextHullViewPlacement } from "./src/project/overview-thread-d3-flow-layout.ts";
 import {
   loadOverviewThreadWhiteboardPresentation,
+  loadOverviewThreadWhiteboardTransform,
   OVERVIEW_THREAD_WHITEBOARD_PRESENTATION_VERSION,
   type OverviewThreadWhiteboardPresentationReconciliation,
   type OverviewThreadWhiteboardPresentationState,
@@ -10,6 +11,7 @@ import {
   parseOverviewThreadWhiteboardPresentation,
   reconcileOverviewThreadWhiteboardPresentation,
   saveOverviewThreadWhiteboardPresentation,
+  saveOverviewThreadWhiteboardTransform,
   serializeOverviewThreadWhiteboardPresentation,
 } from "./src/project/overview-thread-whiteboard-persistence.ts";
 
@@ -31,6 +33,92 @@ const CURRENT: OverviewThreadWhiteboardPresentationReconciliation = {
     [HULL_NODE]: { sessionIds: [HULL_SESSION] },
   },
 };
+
+Deno.test("pre-graph viewport writes preserve all native project placements and viewers", () => {
+  const storage = new MemoryStorage();
+  const key = overviewThreadWhiteboardPresentationStorageKey(PROJECT_ID)!;
+  const original = serializeOverviewThreadWhiteboardPresentation(PROJECT_ID, {
+    ...completeState(),
+    autoShownNodeKeys: [HULL_NODE, STALE_NODE],
+  })!;
+  storage.setItem(key, original);
+  const transform = { x: -120, y: 88, k: 0.75 };
+  assertEquals(
+    saveOverviewThreadWhiteboardTransform(storage, PROJECT_ID, transform),
+    true,
+  );
+  const expected = JSON.parse(original);
+  expected.state.transform = transform;
+  assertEquals(JSON.parse(storage.getItem(key)!), expected);
+  assertEquals(
+    loadOverviewThreadWhiteboardTransform(storage, PROJECT_ID),
+    transform,
+  );
+});
+
+Deno.test("pre-graph viewport cannot overwrite malformed or cross-project presentation", () => {
+  const storage = new MemoryStorage();
+  const key = overviewThreadWhiteboardPresentationStorageKey(PROJECT_ID)!;
+  const wrongProject = serializeOverviewThreadWhiteboardPresentation(
+    "another-project",
+    completeState(),
+  )!;
+  storage.setItem(key, wrongProject);
+  assertEquals(
+    loadOverviewThreadWhiteboardTransform(storage, PROJECT_ID),
+    undefined,
+  );
+  assertEquals(
+    saveOverviewThreadWhiteboardTransform(storage, PROJECT_ID, {
+      x: 0,
+      y: 0,
+      k: 1,
+    }),
+    false,
+  );
+  assertEquals(storage.getItem(key), wrongProject);
+  storage.setItem(key, "not-json");
+  assertEquals(
+    saveOverviewThreadWhiteboardTransform(storage, PROJECT_ID, {
+      x: 0,
+      y: 0,
+      k: 1,
+    }),
+    false,
+  );
+  assertEquals(storage.getItem(key), "not-json");
+});
+
+Deno.test("pre-graph viewport leaves legacy native state for the existing full migration", () => {
+  const storage = new MemoryStorage();
+  const legacyKey = "casys.project-whiteboard.presentation:v3:project%2Fdemo%20alpha";
+  const original = JSON.stringify({
+    schema: "casys-project-whiteboard-presentation",
+    version: 3,
+    projectId: PROJECT_ID,
+    state: completeState(),
+  });
+  storage.setItem(legacyKey, original);
+  assertEquals(
+    loadOverviewThreadWhiteboardTransform(storage, PROJECT_ID),
+    completeState().transform,
+  );
+  assertEquals(
+    saveOverviewThreadWhiteboardTransform(storage, PROJECT_ID, {
+      x: 0,
+      y: 0,
+      k: 1,
+    }),
+    false,
+  );
+  assertEquals(
+    storage.getItem(
+      overviewThreadWhiteboardPresentationStorageKey(PROJECT_ID)!,
+    ),
+    null,
+  );
+  assertEquals(storage.getItem(legacyKey), original);
+});
 
 Deno.test("v4 remembers dismissed defaults without granting or retaining revoked sessions", () => {
   const state = {

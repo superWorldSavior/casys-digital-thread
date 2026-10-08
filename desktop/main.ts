@@ -159,7 +159,7 @@ try {
   throw error;
 }
 const signalShutdown = Promise.withResolvers<void>();
-let windowShutdown = Promise.withResolvers<void>();
+const windowShutdown = Promise.withResolvers<void>();
 const windowClose = installDesktopWindowClose(browserWindow, () => {
   windowShutdown.resolve();
 });
@@ -194,14 +194,12 @@ try {
     });
     if (drained.status === "drained") {
       resourcesDrained = true;
-      windowClose.complete();
-      break;
+      Deno.exit(0);
     }
     console.error(
-      `Desktop close deferred: ${drained.stage} drain is unresolved; close again to retry.`,
+      `Desktop close cleanup failed: ${drained.stage} drain is unresolved; terminating the invisible host.`,
     );
-    windowClose.retry();
-    windowShutdown = Promise.withResolvers<void>();
+    Deno.exit(1);
   }
 } finally {
   cleanupSignals();

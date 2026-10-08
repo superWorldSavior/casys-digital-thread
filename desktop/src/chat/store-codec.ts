@@ -12,6 +12,7 @@ import type {
 import {
   type ChatCanvasLayoutDto,
   type ChatMessageDto,
+  parseCasysProjectId,
   parseChatCanvasLayout,
   parseChatViewerArguments,
   parseChatViewerJson,
@@ -107,6 +108,13 @@ export function readConversationMetadata(
   const projectId = entry.projectId === undefined
     ? undefined
     : requiredString(entry.projectId, "project id");
+  const workspaceProjectId = entry.workspaceProjectId === undefined
+    ? undefined
+    : parseCasysProjectId(entry.workspaceProjectId);
+  if (
+    workspaceProjectId !== undefined &&
+    (kind === "project" || projectId !== undefined)
+  ) throw new TypeError("workspaceProjectId requires a standalone conversation");
   const mcpId = entry.mcpId === undefined
     ? undefined
     : requiredString(entry.mcpId, "conversation MCP id");
@@ -134,6 +142,7 @@ export function readConversationMetadata(
     id: requiredString(entry.id, "conversation id"),
     ...(kind === undefined ? {} : { kind }),
     ...(projectId === undefined ? {} : { projectId }),
+    ...(workspaceProjectId === undefined ? {} : { workspaceProjectId }),
     ...(mcpId === undefined ? {} : { mcpId }),
     ...(agentProfileId === undefined ? {} : { agentProfileId }),
     ...(mcpStatus === undefined ? {} : { mcpStatus }),

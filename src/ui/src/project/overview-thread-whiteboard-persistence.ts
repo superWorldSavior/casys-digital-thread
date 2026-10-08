@@ -314,6 +314,77 @@ export function saveOverviewThreadWhiteboardPresentation(
   }
 }
 
+/** A pre-graph viewport can read geometry without retiring recorded placements. */
+export function loadOverviewThreadWhiteboardTransform(
+  storage: OverviewThreadWhiteboardPresentationStorage,
+  projectId: string,
+): OverviewThreadWhiteboardTransform | undefined {
+  const key = overviewThreadWhiteboardPresentationStorageKey(projectId);
+  if (!key) return undefined;
+  try {
+    const serialized = storage.getItem(key);
+    if (serialized !== null) {
+      return parseOverviewThreadWhiteboardPresentation(serialized, projectId)
+        ?.transform;
+    }
+    for (const version of LEGACY_PRESENTATION_VERSIONS) {
+      const legacyKey = presentationStorageKey(projectId, version);
+      if (!legacyKey) continue;
+      const legacy = storage.getItem(legacyKey);
+      if (legacy !== null) {
+        return parseLegacyOverviewThreadWhiteboardPresentation(
+          legacy,
+          projectId,
+          version,
+        )?.transform;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/** Update only the viewport; unknown or legacy state must not become an empty v4. */
+export function saveOverviewThreadWhiteboardTransform(
+  storage: OverviewThreadWhiteboardPresentationStorage,
+  projectId: string,
+  transform: OverviewThreadWhiteboardTransform,
+): boolean {
+  const key = overviewThreadWhiteboardPresentationStorageKey(projectId);
+  if (!key) return false;
+  try {
+    const previous = storage.getItem(key);
+    const state = previous === null
+      ? undefined
+      : parseOverviewThreadWhiteboardPresentation(previous, projectId);
+    if (previous !== null && !state) return false;
+    if (!state) {
+      for (const version of LEGACY_PRESENTATION_VERSIONS) {
+        const legacyKey = presentationStorageKey(projectId, version);
+        if (legacyKey && storage.getItem(legacyKey) !== null) return false;
+      }
+    }
+    const serialized = serializeOverviewThreadWhiteboardPresentation(
+      projectId,
+      {
+        ...(state ?? {
+          layoutMode: "hierarchy",
+          groupPlacements: {},
+          nodePlacements: {},
+          viewers: [],
+        }),
+        transform,
+      },
+    );
+    if (!serialized) return false;
+    storage.setItem(key, serialized);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parsePresentationState(
   candidate: unknown,
 ): OverviewThreadWhiteboardPresentationState | undefined {

@@ -28,7 +28,7 @@ Deno.test("browser preview keeps one real Project Chat body without simulating n
   assertEquals(chat.includes("if (!bindings) return null"), false);
   assertStringIncludes(
     shell,
-    "const [chatOpen, setChatOpen] = useState(false)",
+    "useState(desktopChatRuntimeAvailable)",
   );
   assertEquals(shell.includes("setChatOpen(true)"), false);
   assertStringIncludes(
@@ -108,7 +108,7 @@ Deno.test("native Chat commands remain owned by the Desktop sibling, never Proje
   const projectSources = await readProjectSources();
   const projectedSurfaces = [shell, workbench, projectSources].join("\n");
 
-  assertStringIncludes(chat, "if (!bindings) return;");
+  assertStringIncludes(chat, "if (bindings === undefined) return;");
   assertStringIncludes(chat, "if (!bindings) return undefined;");
   assertStringIncludes(chat, "await bindings.casysChatSnapshot");
   assertStringIncludes(chat, "await bindings.casysChatCommand(request)");
