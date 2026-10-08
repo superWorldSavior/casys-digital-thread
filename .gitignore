@@ -15,7 +15,8 @@ state/local/
 
 # Réglages locaux des agents et worktrees : purement locaux, et un worktree est
 # une copie complète du dépôt avec son propre .git. Les workflows Grok internes
-# restent suivis dans le dépôt privé et sont exclus uniquement à l'export public.
+# restent locaux et ne doivent pas être publiés dans le dépôt.
+.grok/workflows/
 .claude/
 .cursor/
 .codex/
